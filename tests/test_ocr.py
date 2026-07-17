@@ -7,9 +7,11 @@ from PIL import Image
 
 from schriftlotse.model_registry import MODELS
 from schriftlotse.ocr import (
+    PARTY_MINIMUM_MEMORY_BYTES,
     TESSERACT_HISTORICAL_LANGUAGES,
     OrliLineDetector,
     PartyRecognizer,
+    RecognizerRouter,
     TesseractRecognizer,
 )
 
@@ -59,3 +61,15 @@ def test_nested_tesseract_script_languages_are_discovered(monkeypatch) -> None:
         ),
     )
     assert TesseractRecognizer.installed_languages() == {"deu", "script/Fraktur"}
+
+
+def test_party_is_not_automatic_below_32_gib_on_macos(monkeypatch) -> None:
+    monkeypatch.setattr("schriftlotse.ocr.os.uname", lambda: SimpleNamespace(sysname="Darwin"))
+    monkeypatch.setattr(
+        "schriftlotse.ocr.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=str(PARTY_MINIMUM_MEMORY_BYTES - 1),
+        ),
+    )
+    assert RecognizerRouter.party_memory_available() is False

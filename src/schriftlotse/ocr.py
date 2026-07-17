@@ -24,6 +24,7 @@ from schriftlotse.pagexml import parse_recognized, write_segmentation
 from schriftlotse.preprocessing import PreparedVariant, detect_text_lines
 
 TESSERACT_HISTORICAL_LANGUAGES = ("frak2021", "deu_latf", "script/Fraktur", "deu")
+PARTY_MINIMUM_MEMORY_BYTES = 32 * 1024**3
 
 
 class Recognizer(Protocol):
@@ -61,6 +62,7 @@ class OrliLineDetector:
 
     def __init__(self, manager: ModelManager) -> None:
         try:
+            import timm
             import torch
             from kraken.models import load_models
             from kraken.tasks.segmentation import SegmentationTaskModel
@@ -70,7 +72,18 @@ class OrliLineDetector:
         model_path = manager.path_for("orli")
         if not model_path.exists():
             raise RuntimeError("Orli ist noch nicht installiert")
-        self._task = SegmentationTaskModel(load_models(model_path, tasks=["segmentation"]))
+        original_create_model = timm.create_model
+
+        def create_local_model(*args: Any, **kwargs: Any) -> Any:
+            kwargs["pretrained"] = False
+            return original_create_model(*args, **kwargs)
+
+        timm.create_model = create_local_model
+        try:
+            models = load_models(model_path, tasks=["segmentation"])
+        finally:
+            timm.create_model = original_create_model
+        self._task = SegmentationTaskModel(models)
         accelerator = "mps" if torch.backends.mps.is_available() else "cpu"
         self._config = OrliSegmentationInferenceConfig(
             accelerator=accelerator,
@@ -208,7 +221,7 @@ class TrOCRRecognizer:
                 generated = self.model.generate(
                     pixels,
                     num_beams=4,
-                    max_new_tokens=256,
+                    max_length=256,
                     return_dict_in_generate=True,
                     output_scores=True,
                 )
@@ -302,6 +315,25 @@ class RecognizerRouter:
             return ["trocr-kurrent-19", "trocr-kurrent-early"]
         return ["trocr-modern"]
 
+    @staticmethod
+    def party_memory_available() -> bool:
+        if os.uname().sysname != "Darwin":
+            return True
+        try:
+            process = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            return (
+                process.returncode == 0
+                and int(process.stdout.strip()) >= PARTY_MINIMUM_MEMORY_BYTES
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return False
+
     def recognizers(self, year: int | None, script_hint: ScriptHint) -> list[Recognizer]:
         recognizers: list[Recognizer] = []
         installed = TesseractRecognizer.installed_languages(self.settings.tesseract_command)
@@ -314,14 +346,21 @@ class RecognizerRouter:
             if language in installed:
                 recognizers.append(TesseractRecognizer(language, self.settings.tesseract_command))
         if self.settings.advanced_models:
+            model_keys = self._model_keys(year, script_hint)
+            party_available = (
+                self.manager.is_installed("party-v4") and self.party_memory_available()
+            )
             line_detector: OrliLineDetector | None = None
-            if self.manager.is_installed("orli"):
+            needs_line_detector = party_available or any(
+                self.manager.is_installed(key) for key in model_keys
+            )
+            if needs_line_detector and self.manager.is_installed("orli"):
                 with suppress(RuntimeError):
                     line_detector = OrliLineDetector(self.manager)
-            if self.manager.is_installed("party-v4"):
+            if party_available:
                 with suppress(RuntimeError):
                     recognizers.append(PartyRecognizer(self.manager, line_detector))
-            for key in self._model_keys(year, script_hint):
+            for key in model_keys:
                 if self.manager.is_installed(key):
                     try:
                         recognizers.append(

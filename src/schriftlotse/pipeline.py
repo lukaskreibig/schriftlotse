@@ -64,6 +64,8 @@ class ProcessingPipeline:
         job_id = uuid.uuid4().hex
         self.database.create_job(job_id)
         self.database.update_job(job_id, JobStatus.RUNNING)
+        if progress:
+            progress("Dateien und Seiten werden erfasst", 0.01)
         documents = discover_documents(request.sources)
         if not documents:
             self.database.update_job(
@@ -91,16 +93,32 @@ class ProcessingPipeline:
                 for page_index, source_path, image in iter_document_pages(document):
                     if self._cancel.is_set():
                         break
+                    page_share = 1.0 / max(total_pages, 1)
+                    page_start = completed / max(total_pages, 1)
+                    page_label = f"{document.title}: Seite {page_index + 1}/{document.page_count}"
                     if progress:
                         progress(
-                            f"{document.title}: Seite {page_index + 1} wird vorbereitet",
-                            completed / max(total_pages, 1),
+                            f"{page_label} · Scan wird analysiert", page_start + 0.05 * page_share
                         )
                     variants = generate_variants(image)
                     selected = select_preflight_variants(variants, limit=2)
+                    if progress:
+                        progress(
+                            f"{page_label} · Helligkeit, Kontrast und Schieflage angepasst",
+                            page_start + 0.22 * page_share,
+                        )
+                        progress(
+                            f"{page_label} · lokale OCR-/HTR-Modelle arbeiten",
+                            page_start + 0.30 * page_share,
+                        )
                     candidate = self.router.recognize_variants(
                         selected, request.year, request.script_hint
                     )
+                    if progress:
+                        progress(
+                            f"{page_label} · erkannt mit {candidate.model}",
+                            page_start + 0.82 * page_share,
+                        )
                     warnings: list[str] = []
                     if candidate.expected_cer > 0.10:
                         warnings.append(
@@ -112,6 +130,11 @@ class ProcessingPipeline:
                         and candidate.expected_cer > 0.10
                         and candidate.lines
                     ):
+                        if progress:
+                            progress(
+                                f"{page_label} · optionale Zweitlesung wird geprüft",
+                                page_start + 0.86 * page_share,
+                            )
                         self._cloud_review(
                             reviewer,
                             image,
@@ -144,8 +167,8 @@ class ProcessingPipeline:
                     completed += 1
                     if progress:
                         progress(
-                            f"{document.title}: Seite {page_index + 1} erkannt",
-                            completed / max(total_pages, 1),
+                            f"{page_label} · Seite fertig",
+                            (completed - 0.10) / max(total_pages, 1),
                         )
                 result = DocumentResult(
                     document=document,
@@ -159,7 +182,17 @@ class ProcessingPipeline:
                     else self.paths.output
                 )
                 output_dir = base_output / f"{slugify(document.title)}-{document.id[:8]}"
+                if progress:
+                    progress(
+                        f"{document.title} · Ausgabedateien werden formatiert",
+                        min(0.97, completed / max(total_pages, 1)),
+                    )
                 exports.extend(export_document(result, output_dir))
+                if progress:
+                    progress(
+                        f"{document.title} · Suchindex wird aktualisiert",
+                        min(0.98, completed / max(total_pages, 1)),
+                    )
                 self.database.save_document(job_id, result)
                 results.append(result)
             index_path = self._write_batch_index(job_id, results)

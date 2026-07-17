@@ -1,5 +1,15 @@
 # Änderungsprotokoll
 
+## 0.1.3 – 2026-07-17
+
+- dauerhaft sichtbarer Live-Status mit Prozent, Arbeitsschritt, Laufzeit und Lokal-Hinweis
+- Fortschritt während langer Modellläufe wird sekündlich aktualisiert
+- Gradio darf erzeugte Dateien aus dem SchriftLotse-Ausgabeordner bereitstellen
+- wiederholte TrOCR-Generierungswarnung entfernt
+- Party wird auf Macs unter 32 GiB nicht automatisch gestartet
+- Orli wird ohne Online-Abfrage aus den bereits installierten Gewichten aufgebaut
+- Start nutzt den fixierten Lockfile-Stand ohne erneute Abhängigkeitsauflösung
+
 ## 0.1.2 – 2026-07-17
 
 - Homebrews aktuelles Tesseract-Modell `script/Fraktur` wird automatisch mitbewertet

@@ -24,7 +24,7 @@ if ! command -v tesseract >/dev/null 2>&1; then
 fi
 
 echo "SchriftLotse wird vorbereitet …"
-uv sync --extra models
+uv sync --frozen --extra models
 
 if ! uv run schriftlotse models core-ready >/dev/null 2>&1; then
   echo "Für Kurrent-Handschrift werden TrOCR Kurrent und Orli empfohlen (ca. 2 GB)."
@@ -35,4 +35,5 @@ if ! uv run schriftlotse models core-ready >/dev/null 2>&1; then
 fi
 
 echo "SchriftLotse startet lokal im Browser …"
+echo "🔒 Nur dieser Mac: http://127.0.0.1:7860 (keine öffentliche Freigabe)"
 uv run schriftlotse gui

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import queue
 import subprocess
+import threading
+import time
+from collections.abc import Iterator
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +30,13 @@ CSS = """
 .sl-hero h1 { color: white; margin: 0 0 5px 0; }
 .sl-hero p { margin: 0; opacity: .9; }
 .sl-note { border-left: 4px solid #d29b3d; padding-left: 12px; }
+.sl-progress { background: #fff; border: 1px solid #d7d2c7; border-radius: 12px;
+  padding: 13px 15px; margin: 8px 0; }
+.sl-progress-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.sl-progress-track { height: 10px; overflow: hidden; background: #e8e4dc; border-radius: 999px; }
+.sl-progress-fill { height: 100%; background: linear-gradient(90deg, #d29b3d, #2d7683);
+  transition: width .35s ease; }
+.sl-local { color: #27633d; font-size: .9rem; margin-top: 7px; }
 """
 
 
@@ -61,8 +73,7 @@ class UIController:
         advanced: bool,
         cloud: bool,
         budget: float,
-        progress: gr.Progress = gr.Progress(),  # noqa: B008 - injected by Gradio
-    ) -> tuple[str, list[str]]:
+    ) -> Iterator[tuple[str, list[str]]]:
         sources = [Path(path) for path in (uploaded or [])]
         if folder.strip():
             sources.append(Path(folder.strip()))
@@ -83,10 +94,40 @@ class UIController:
             advanced_models=advanced,
         )
         pipeline = ProcessingPipeline(self.paths, self.settings, self.database)
-        job_id, results, exports = pipeline.run(
-            request,
-            progress=lambda message, value: progress(value, desc=message),
-        )
+        updates: queue.Queue[tuple[str, float]] = queue.Queue()
+        outcome: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+        started = time.monotonic()
+
+        def run_pipeline() -> None:
+            try:
+                result = pipeline.run(
+                    request, progress=lambda message, value: updates.put((message, value))
+                )
+                outcome.put(("ok", result))
+            except BaseException as error:  # forwarded to Gradio in the generator thread
+                outcome.put(("error", error))
+
+        worker = threading.Thread(target=run_pipeline, name="schriftlotse-job", daemon=True)
+        worker.start()
+        message, value = "Auftrag wird lokal vorbereitet …", 0.0
+        yield self._progress_status(message, value, started), []
+        last_heartbeat = time.monotonic()
+        while worker.is_alive() or not updates.empty():
+            try:
+                message, value = updates.get(timeout=0.35)
+                last_heartbeat = time.monotonic()
+                yield self._progress_status(message, value, started), []
+            except queue.Empty:
+                if time.monotonic() - last_heartbeat >= 1.0:
+                    last_heartbeat = time.monotonic()
+                    yield self._progress_status(message, value, started), []
+        worker.join()
+        state, payload = outcome.get()
+        if state == "error":
+            error_message = str(payload) or payload.__class__.__name__
+            yield self._progress_status(f"Fehler: {error_message}", value, started, failed=True), []
+            raise gr.Error(error_message)
+        job_id, results, exports = payload
         summary = [f"## Auftrag `{job_id[:8]}` abgeschlossen", ""]
         for result in results:
             uncertain = sum(page.expected_cer > 0.10 for page in result.pages)
@@ -94,7 +135,37 @@ class UIController:
                 f"- **{result.document.title}**: {len(result.pages)} Seiten, "
                 f"{uncertain} Seite(n) zur Prüfung, Ausgabe: `{result.output_dir}`"
             )
-        return "\n".join(summary), [str(path) for path in exports if path.exists()]
+        summary.extend(
+            [
+                "",
+                f"**Fertig nach {self._elapsed(started)}.** "
+                "Alle Verarbeitungsschritte liefen lokal.",
+            ]
+        )
+        yield "\n".join(summary), [str(path) for path in exports if path.exists()]
+
+    @staticmethod
+    def _elapsed(started: float) -> str:
+        seconds = max(0, round(time.monotonic() - started))
+        minutes, seconds = divmod(seconds, 60)
+        return f"{minutes}:{seconds:02d} min" if minutes else f"{seconds} s"
+
+    @classmethod
+    def _progress_status(
+        cls, message: str, value: float, started: float, failed: bool = False
+    ) -> str:
+        percent = max(0, min(100, round(value * 100)))
+        color = "#b42318" if failed else "#173f4b"
+        return (
+            '<div class="sl-progress">'
+            '<div class="sl-progress-head">'
+            f'<strong style="color:{color}">{escape(message)}</strong>'
+            f"<span>{percent}% · {cls._elapsed(started)}</span></div>"
+            '<div class="sl-progress-track">'
+            f'<div class="sl-progress-fill" style="width:{percent}%"></div></div>'
+            '<div class="sl-local">🔒 Lokal auf diesem Mac · keine öffentliche Freigabe</div>'
+            "</div>"
+        )
 
     def search(
         self,
@@ -261,7 +332,10 @@ def build_app() -> gr.Blocks:
                         0, 10, value=1, step=0.25, label="Maximales Cloud-Budget in USD"
                     )
             start = gr.Button("Entzifferung starten", variant="primary", size="lg")
-            status = gr.Markdown(elem_classes=["sl-note"])
+            status = gr.Markdown(
+                "Bereit · 🔒 Verarbeitung lokal auf diesem Mac",
+                elem_classes=["sl-note"],
+            )
             output_files = gr.File(label="Erzeugte Dateien", file_count="multiple")
             start.click(
                 controller.process,
@@ -358,12 +432,18 @@ def build_app() -> gr.Blocks:
 
 def launch() -> None:
     demo = build_app()
+    paths = AppPaths.default()
+    settings = Settings.load(paths)
+    allowed_paths = [str(paths.output)]
+    if settings.output_dir:
+        allowed_paths.append(str(Path(settings.output_dir).expanduser().resolve()))
     demo.queue(default_concurrency_limit=1).launch(
         server_name="127.0.0.1",
         server_port=7860,
         share=False,
         inbrowser=True,
         show_error=True,
+        allowed_paths=allowed_paths,
         css=CSS,
         theme=gr.themes.Soft(),
     )

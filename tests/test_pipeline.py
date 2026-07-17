@@ -35,9 +35,18 @@ def test_pipeline_persists_indexes_and_exports(app_paths, tmp_path: Path) -> Non
     Image.new("RGB", (500, 300), "white").save(scan)
     pipeline = ProcessingPipeline(app_paths, Settings(advanced_models=False))
     pipeline.router = FakeRouter()
-    job_id, results, exports = pipeline.run(DocumentRequest(sources=[scan], advanced_models=False))
+    progress: list[tuple[str, float]] = []
+    job_id, results, exports = pipeline.run(
+        DocumentRequest(sources=[scan], advanced_models=False),
+        progress=lambda message, value: progress.append((message, value)),
+    )
     assert job_id
     assert results[0].pages[0].lines[0].text.startswith("Johann")
     assert any(path.name == "schriftlotse.pdf" for path in exports)
     rows = pipeline.database.rows("SELECT text FROM lines")
     assert rows[0]["text"].startswith("Johann")
+    messages = "\n".join(message for message, _value in progress)
+    assert "Scan wird analysiert" in messages
+    assert "lokale OCR-/HTR-Modelle arbeiten" in messages
+    assert "Ausgabedateien werden formatiert" in messages
+    assert progress[-1] == ("Verarbeitung abgeschlossen", 1.0)
