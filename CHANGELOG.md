@@ -1,5 +1,16 @@
 # Änderungsprotokoll
 
+## 0.1.4 – 2026-07-17
+
+- fehlenden TrOCR-Tokenizer erkannt und mit vollständig gepinntem Offline-Prozessor repariert
+- robuste lokale Kraken-BLLA-Zeilenerkennung für gemischte historische Formulare
+- Kurrent-Zeilen werden gebündelt auf Apple Silicon verarbeitet
+- gedruckte Fraktur wird zeilenweise separat gelesen und räumlich zusammengeführt
+- Modellwahl bewertet jetzt Textabdeckung und Vollständigkeit wesentlich stärker
+- Jahresangaben in Datumszeilen können transparent durch die eingegebene Jahreszahl gestützt werden
+- unvollständige Ergebnisse werden deutlich gekennzeichnet statt als zuverlässig ausgegeben
+- Orli ist nur noch eine experimentelle Alternative und kein unnötiger Kerndownload
+
 ## 0.1.3 – 2026-07-17
 
 - dauerhaft sichtbarer Live-Status mit Prozent, Arbeitsschritt, Laufzeit und Lokal-Hinweis

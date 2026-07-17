@@ -32,8 +32,8 @@ erste Einrichtung.
 2. `SchriftLotse.command` per Doppelklick öffnen. Beim ersten Download kann macOS einmalig
    **Rechtsklick → Öffnen** verlangen.
 3. Die optionale Installation von Tesseract und deutschen Sprachdaten bestätigen.
-4. Einmalig die empfohlenen freien Kernmodelle TrOCR Kurrent und Orli (zusammen ca. 2 GB)
-   bestätigen. Beide Quellen sind auf feste Revisionen bzw. Prüfsummen fixiert.
+4. Einmalig TrOCR Kurrent samt vollständigem lokalem Prozessor (ca. 1,2 GB)
+   bestätigen. Modell und Prozessor sind auf feste Revisionen fixiert.
 5. Die Oberfläche öffnet sich lokal unter `http://127.0.0.1:7860`.
 
 Der Launcher installiert Python 3.12 und die Modelladapter reproduzierbar mit `uv`. Weitere
@@ -74,9 +74,11 @@ uv run schriftlotse doctor
 Das Original bleibt unangetastet. SchriftLotse erzeugt temporär ein orientiertes Farbbild,
 eine beleuchtungsnormalisierte Graustufenversion, eine mild kontrastverstärkte Version und
 eine adaptive Sauvola-Binarisierung. Bildmetriken wählen zwei Kandidaten; die OCR-Ergebnisse
-entscheiden anschließend. Das freie Orli-Modell erkennt Grundlinien und Lesereihenfolge;
-falls es noch nicht installiert ist oder scheitert, übernimmt eine konservative lokale
-Zeilenerkennung. Umlaute, Punkte und kleine Satzzeichen werden nicht aggressiv entfernt.
+entscheiden anschließend. Das mit Kraken gelieferte freie BLLA-Modell erkennt Grundlinien
+und Lesereihenfolge auch auf gemischten Formularen. Gedruckte Fraktur wird zeilenweise mit
+Tesseract gegengelesen und mit der Kurrent-Erkennung zusammengeführt. Orli bleibt als
+experimentelle Alternative verfügbar. Umlaute, Punkte und kleine Satzzeichen werden nicht
+aggressiv entfernt.
 
 ## Lokale Modelle
 

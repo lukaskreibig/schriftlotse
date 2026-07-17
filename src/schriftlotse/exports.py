@@ -17,6 +17,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from schriftlotse import __version__
 from schriftlotse.domain import DocumentResult, PageResult
 from schriftlotse.pagexml import NS
 
@@ -38,7 +39,7 @@ def reading_text(result: DocumentResult) -> str:
 def _page_xml(result: DocumentResult, page: PageResult, destination: Path) -> None:
     root = ET.Element(f"{{{NS}}}PcGts")
     metadata = ET.SubElement(root, f"{{{NS}}}Metadata")
-    ET.SubElement(metadata, f"{{{NS}}}Creator").text = "SchriftLotse 0.1.0"
+    ET.SubElement(metadata, f"{{{NS}}}Creator").text = f"SchriftLotse {__version__}"
     page_node = ET.SubElement(
         root,
         f"{{{NS}}}Page",

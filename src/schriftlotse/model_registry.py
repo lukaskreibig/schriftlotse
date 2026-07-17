@@ -24,6 +24,8 @@ class ModelSpec:
     url: str | None = None
     checksum: str | None = None
     filename: str | None = None
+    processor_source: str | None = None
+    processor_revision: str | None = None
     optional: bool = True
 
 
@@ -43,14 +45,14 @@ MODELS: dict[str, ModelSpec] = {
     "orli": ModelSpec(
         key="orli",
         name="Orli",
-        purpose="Grundlinien und Lesereihenfolge",
+        purpose="Experimentelle alternative Grundlinienerkennung",
         license="Apache-2.0",
         source="https://zenodo.org/records/20558179",
         kind="file",
         url="https://zenodo.org/api/records/20558179/files/orli_base.safetensors/content",
         checksum="md5:a9a6b0caf497203e758dbd4fc624af10",
         filename="orli_base.safetensors",
-        optional=False,
+        optional=True,
     ),
     "trocr-kurrent-19": ModelSpec(
         key="trocr-kurrent-19",
@@ -60,6 +62,8 @@ MODELS: dict[str, ModelSpec] = {
         source="https://huggingface.co/dh-unibe/trocr-kurrent",
         kind="huggingface",
         revision="dd026dc68fd784f214bccd932081b8048e5bfba0",
+        processor_source="https://huggingface.co/microsoft/trocr-base-handwritten",
+        processor_revision="eaacaf452b06415df8f10bb6fad3a4c11e609406",
         optional=False,
     ),
     "trocr-kurrent-early": ModelSpec(
@@ -70,6 +74,8 @@ MODELS: dict[str, ModelSpec] = {
         source="https://huggingface.co/dh-unibe/trocr-kurrent-XVI-XVII",
         kind="huggingface",
         revision="eaedace4a032ef319db19351342f60019e3daca6",
+        processor_source="https://huggingface.co/microsoft/trocr-base-handwritten",
+        processor_revision="eaacaf452b06415df8f10bb6fad3a4c11e609406",
     ),
     "trocr-modern": ModelSpec(
         key="trocr-modern",
@@ -79,6 +85,8 @@ MODELS: dict[str, ModelSpec] = {
         source="https://huggingface.co/fhswf/TrOCR_german_handwritten",
         kind="huggingface",
         revision="f43d8831af99105e9dbb718fcfc8373c0010174d",
+        processor_source="https://huggingface.co/microsoft/trocr-base-handwritten",
+        processor_revision="eaacaf452b06415df8f10bb6fad3a4c11e609406",
     ),
     "trocr-medieval": ModelSpec(
         key="trocr-medieval",
@@ -88,6 +96,8 @@ MODELS: dict[str, ModelSpec] = {
         source="https://huggingface.co/dh-unibe/trocr-medieval-escriptmask",
         kind="huggingface",
         revision="bd7124a363ca38b868fdeb4b712f02bef29e6c6e",
+        processor_source="https://huggingface.co/microsoft/trocr-base-handwritten",
+        processor_revision="eaacaf452b06415df8f10bb6fad3a4c11e609406",
     ),
     "qwen-embed": ModelSpec(
         key="qwen-embed",
@@ -102,6 +112,14 @@ MODELS: dict[str, ModelSpec] = {
 
 
 class ModelManager:
+    _PROCESSOR_FILES = (
+        "merges.txt",
+        "preprocessor_config.json",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
+        "vocab.json",
+    )
+
     def __init__(self, paths: AppPaths) -> None:
         self.paths = paths
         self.paths.ensure()
@@ -111,10 +129,18 @@ class ModelManager:
         directory = self.paths.models / key
         return directory / spec.filename if spec.filename else directory
 
+    def processor_path_for(self, key: str) -> Path:
+        return self.path_for(key) / "processor"
+
     def is_installed(self, key: str) -> bool:
         path = self.path_for(key)
         if MODELS[key].kind == "huggingface":
-            return (path / ".schriftlotse-model.json").exists()
+            if not (path / ".schriftlotse-model.json").exists():
+                return False
+            if MODELS[key].processor_source:
+                processor = self.processor_path_for(key)
+                return all((processor / filename).exists() for filename in self._PROCESSOR_FILES)
+            return True
         return path.exists() and path.stat().st_size > 0
 
     def status(self) -> list[dict[str, Any]]:
@@ -181,10 +207,30 @@ class ModelManager:
                 "scaler.pt",
             ],
         )
+        if spec.processor_source:
+            if not spec.processor_revision:
+                raise ValueError(f"Keine feste Prozessor-Revision für {spec.name}")
+            processor_repo = spec.processor_source.removeprefix("https://huggingface.co/")
+            snapshot_download(
+                repo_id=processor_repo,
+                revision=spec.processor_revision,
+                local_dir=destination / "processor",
+                allow_patterns=list(self._PROCESSOR_FILES),
+            )
         marker = destination / ".schriftlotse-model.json"
         marker.write_text(
             json.dumps(
-                {"repo_id": repo_id, "revision": spec.revision, "license": spec.license},
+                {
+                    "repo_id": repo_id,
+                    "revision": spec.revision,
+                    "license": spec.license,
+                    "processor_repo_id": (
+                        spec.processor_source.removeprefix("https://huggingface.co/")
+                        if spec.processor_source
+                        else None
+                    ),
+                    "processor_revision": spec.processor_revision,
+                },
                 indent=2,
             ),
             encoding="utf-8",

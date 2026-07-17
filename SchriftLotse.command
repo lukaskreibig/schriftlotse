@@ -27,7 +27,7 @@ echo "SchriftLotse wird vorbereitet …"
 uv sync --frozen --extra models
 
 if ! uv run schriftlotse models core-ready >/dev/null 2>&1; then
-  echo "Für Kurrent-Handschrift werden TrOCR Kurrent und Orli empfohlen (ca. 2 GB)."
+  echo "Für Kurrent-Handschrift wird TrOCR Kurrent samt lokalem Prozessor benötigt (ca. 1,2 GB)."
   read "models_answer?Empfohlene freie Kernmodelle jetzt lokal installieren? [J/n] "
   if [[ -z "$models_answer" || "$models_answer" == [JjYy]* ]]; then
     uv run schriftlotse models install-core

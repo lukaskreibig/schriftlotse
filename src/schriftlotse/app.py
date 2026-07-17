@@ -131,9 +131,20 @@ class UIController:
         summary = [f"## Auftrag `{job_id[:8]}` abgeschlossen", ""]
         for result in results:
             uncertain = sum(page.expected_cer > 0.10 for page in result.pages)
+            incomplete = sum(
+                any("unvollständig" in warning for warning in getattr(page, "warnings", []))
+                for page in result.pages
+            )
+            marker = "⚠️" if incomplete else "✅"
             summary.append(
-                f"- **{result.document.title}**: {len(result.pages)} Seiten, "
-                f"{uncertain} Seite(n) zur Prüfung, Ausgabe: `{result.output_dir}`"
+                f"- {marker} **{result.document.title}**: {len(result.pages)} Seiten, "
+                f"{uncertain} Seite(n) zur Prüfung"
+                + (
+                    f", {incomplete} wahrscheinlich unvollständig"
+                    if incomplete
+                    else ""
+                )
+                + f", Ausgabe: `{result.output_dir}`"
             )
         summary.extend(
             [
@@ -414,7 +425,7 @@ def build_app() -> gr.Blocks:
             )
             model_choice = gr.Dropdown(
                 choices=[(spec.name, key) for key, spec in MODELS.items()],
-                value="party-v4",
+                value="trocr-kurrent-19",
                 label="Modell installieren",
             )
             install = gr.Button("Ausgewähltes Modell laden")
