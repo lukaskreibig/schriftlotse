@@ -1,5 +1,12 @@
 # Änderungsprotokoll
 
+## 0.1.1 – 2026-07-17
+
+- Kernmodell-Empfehlung auf das für 18-GB-Apple-Silicon passendere TrOCR Kurrent umgestellt
+- unnötige doppelte PyTorch-Gewichte beim Hugging-Face-Download ausgeschlossen
+- Party-Fehler werden zuverlässig erkannt und lösen den sicheren Modell-Fallback aus
+- Party-Speicherbedarf in Oberfläche und Dokumentation klar gekennzeichnet
+
 ## 0.1.0 – 2026-07-17
 
 - erste öffentliche Version von SchriftLotse
