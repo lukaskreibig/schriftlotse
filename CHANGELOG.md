@@ -1,5 +1,9 @@
 # Änderungsprotokoll
 
+## 0.1.2 – 2026-07-17
+
+- Homebrews aktuelles Tesseract-Modell `script/Fraktur` wird automatisch mitbewertet
+
 ## 0.1.1 – 2026-07-17
 
 - Kernmodell-Empfehlung auf das für 18-GB-Apple-Silicon passendere TrOCR Kurrent umgestellt

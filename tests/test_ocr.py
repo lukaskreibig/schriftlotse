@@ -6,7 +6,12 @@ import pytest
 from PIL import Image
 
 from schriftlotse.model_registry import MODELS
-from schriftlotse.ocr import OrliLineDetector, PartyRecognizer
+from schriftlotse.ocr import (
+    TESSERACT_HISTORICAL_LANGUAGES,
+    OrliLineDetector,
+    PartyRecognizer,
+    TesseractRecognizer,
+)
 
 
 def test_orli_boundaries_become_clamped_line_boxes() -> None:
@@ -38,3 +43,19 @@ def test_party_missing_output_becomes_controlled_fallback(monkeypatch, tmp_path)
 def test_huggingface_models_use_full_commit_revisions() -> None:
     revisions = [spec.revision for spec in MODELS.values() if spec.kind == "huggingface"]
     assert all(revision is not None and len(revision) == 40 for revision in revisions)
+
+
+def test_homebrew_fraktur_language_is_considered() -> None:
+    assert "script/Fraktur" in TESSERACT_HISTORICAL_LANGUAGES
+
+
+def test_nested_tesseract_script_languages_are_discovered(monkeypatch) -> None:
+    monkeypatch.setattr("schriftlotse.ocr.shutil.which", lambda _name: "/opt/tesseract")
+    monkeypatch.setattr(
+        "schriftlotse.ocr.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="List of available languages in tessdata (2):\ndeu\nscript/Fraktur\n",
+        ),
+    )
+    assert TesseractRecognizer.installed_languages() == {"deu", "script/Fraktur"}
