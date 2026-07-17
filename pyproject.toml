@@ -50,7 +50,7 @@ models = [
   "usearch>=2.19,<3",
 ]
 dev = [
-  "mypy>=1.16,<2",
+  "mypy>=1.16,<3",
   "pytest>=8.4,<9",
   "pytest-cov>=6.2,<8",
   "ruff>=0.12,<1",
