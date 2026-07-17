@@ -23,6 +23,8 @@ from schriftlotse.model_registry import ModelManager
 from schriftlotse.pagexml import parse_recognized, write_segmentation
 from schriftlotse.preprocessing import PreparedVariant, detect_text_lines
 
+TESSERACT_HISTORICAL_LANGUAGES = ("frak2021", "deu_latf", "script/Fraktur", "deu")
+
 
 class Recognizer(Protocol):
     name: str
@@ -124,8 +126,20 @@ class TesseractRecognizer:
     def installed_languages(command: str = "tesseract") -> set[str]:
         if not TesseractRecognizer.available(command):
             return set()
-        pytesseract.pytesseract.tesseract_cmd = command
-        return set(pytesseract.get_languages(config=""))
+        process = subprocess.run(
+            [command, "--list-langs"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if process.returncode != 0:
+            return set()
+        return {
+            line.strip()
+            for line in process.stdout.splitlines()
+            if line.strip() and not line.startswith("List of available languages")
+        }
 
     def recognize(self, image: Image.Image, variant: str) -> list[LineResult]:
         data = pytesseract.image_to_data(
@@ -292,7 +306,9 @@ class RecognizerRouter:
         recognizers: list[Recognizer] = []
         installed = TesseractRecognizer.installed_languages(self.settings.tesseract_command)
         preferred = (
-            ["frak2021", "deu_latf", "deu"] if script_hint != ScriptHint.TYPEWRITER else ["deu"]
+            list(TESSERACT_HISTORICAL_LANGUAGES)
+            if script_hint != ScriptHint.TYPEWRITER
+            else ["deu"]
         )
         for language in preferred:
             if language in installed:
