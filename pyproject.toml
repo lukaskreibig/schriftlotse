@@ -1,0 +1,102 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "schriftlotse"
+version = "0.1.0"
+description = "Lokale OCR/HTR- und Archivsuche für historische deutschsprachige Dokumente"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { file = "LICENSE" }
+authors = [{ name = "Lukas Kreibig" }]
+keywords = ["OCR", "HTR", "Kurrent", "Fraktur", "historical documents"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Natural Language :: German",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "gradio>=6.20,<7",
+  "httpx>=0.28,<1",
+  "keyring>=25.6,<26",
+  "lxml>=5.4,<7",
+  "numpy>=2.2,<3",
+  "opencv-python-headless>=4.11,<5",
+  "pillow>=11.2,<13",
+  "pillow-heif>=1.1,<2",
+  "platformdirs>=4.3,<5",
+  "pydantic>=2.11,<3",
+  "pypdfium2>=4.30,<5",
+  "pytesseract>=0.3.13,<1",
+  "python-docx>=1.1,<2",
+  "rapidfuzz>=3.13,<4",
+  "reportlab>=4.4,<5",
+  "scikit-image>=0.25,<1",
+  "typer>=0.16,<1",
+]
+
+[project.optional-dependencies]
+models = [
+  "huggingface-hub>=0.33,<2",
+  "kraken==7.0.2",
+  "orli @ git+https://github.com/mittagessen/orli.git@7996f29edeee95aa9279136d204655fde3816ba1",
+  "party @ git+https://github.com/mittagessen/party.git@c2589b1b515ed690f883c6afaef6c01ce29bf72d7",
+  "sentence-transformers>=5.0,<6",
+  "torch>=2.7,<3",
+  "transformers>=5.0,<6",
+  "usearch>=2.19,<3",
+]
+dev = [
+  "mypy>=1.16,<2",
+  "pytest>=8.4,<9",
+  "pytest-cov>=6.2,<8",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+schriftlotse = "schriftlotse.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/schriftlotse"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/schriftlotse",
+  "tests",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "THIRD_PARTY_MODELS.md",
+  "SchriftLotse.command",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["schriftlotse"]
+exclude = ["tests"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+disable_error_code = ["import-untyped", "no-untyped-call"]
+
+[[tool.mypy.overrides]]
+module = ["schriftlotse.app"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

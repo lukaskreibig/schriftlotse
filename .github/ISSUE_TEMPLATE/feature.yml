@@ -1,0 +1,13 @@
+name: Funktionswunsch
+description: Eine Verbesserung für Erkennung, Suche oder Export vorschlagen.
+title: "[Idee] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes: { label: Anwendungsfall, description: "Welches konkrete Problem soll gelöst werden?" }
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes: { label: Gewünschtes Verhalten }
+    validations: { required: true }

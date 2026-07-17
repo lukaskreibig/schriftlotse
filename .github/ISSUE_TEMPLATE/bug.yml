@@ -1,0 +1,23 @@
+name: Fehlerbericht
+description: Einen reproduzierbaren technischen Fehler melden – ohne private Scans.
+title: "[Fehler] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Bitte keine privaten Dokumente, Transkriptionen oder API-Schlüssel hochladen."
+  - type: input
+    id: version
+    attributes: { label: SchriftLotse-Version, placeholder: "0.1.0" }
+    validations: { required: true }
+  - type: textarea
+    id: description
+    attributes: { label: Beschreibung, description: "Was ist passiert und was wurde erwartet?" }
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes: { label: Reproduktion, description: "Schritte mit anonymisierten Pfaden und Daten" }
+    validations: { required: true }
+  - type: textarea
+    id: doctor
+    attributes: { label: Diagnose, description: "Anonymisierte Ausgabe von `schriftlotse doctor`" }

@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from PIL import Image
+
+from schriftlotse.config import Settings
+from schriftlotse.domain import DocumentRequest, LineResult
+from schriftlotse.ocr import RecognitionCandidate
+from schriftlotse.pipeline import ProcessingPipeline
+
+
+class FakeRouter:
+    def recognize_variants(self, variants, year, script_hint):
+        return RecognitionCandidate(
+            model="fake",
+            variant=variants[0].metadata.name,
+            lines=[
+                LineResult(
+                    id="temporary",
+                    text="Johann Schmidt, geboren 1872.",
+                    bbox=(20, 20, 300, 60),
+                    confidence=0.94,
+                    model="fake",
+                    variant=variants[0].metadata.name,
+                )
+            ],
+            score=0.94,
+            expected_cer=0.05,
+        )
+
+
+def test_pipeline_persists_indexes_and_exports(app_paths, tmp_path: Path) -> None:
+    scan = tmp_path / "scan.png"
+    Image.new("RGB", (500, 300), "white").save(scan)
+    pipeline = ProcessingPipeline(app_paths, Settings(advanced_models=False))
+    pipeline.router = FakeRouter()
+    job_id, results, exports = pipeline.run(DocumentRequest(sources=[scan], advanced_models=False))
+    assert job_id
+    assert results[0].pages[0].lines[0].text.startswith("Johann")
+    assert any(path.name == "schriftlotse.pdf" for path in exports)
+    rows = pipeline.database.rows("SELECT text FROM lines")
+    assert rows[0]["text"].startswith("Johann")
