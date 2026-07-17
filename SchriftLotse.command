@@ -27,7 +27,7 @@ echo "SchriftLotse wird vorbereitet …"
 uv sync --extra models
 
 if ! uv run schriftlotse models core-ready >/dev/null 2>&1; then
-  echo "Für schwierige historische Handschrift werden Party v4 und Orli empfohlen (ca. 1,1 GB)."
+  echo "Für Kurrent-Handschrift werden TrOCR Kurrent und Orli empfohlen (ca. 2 GB)."
   read "models_answer?Empfohlene freie Kernmodelle jetzt lokal installieren? [J/n] "
   if [[ -z "$models_answer" || "$models_answer" == [JjYy]* ]]; then
     uv run schriftlotse models install-core

@@ -110,16 +110,16 @@ def model_install(key: Annotated[str, typer.Argument()]) -> None:
 def core_models_ready() -> None:
     """Mit Exit-Code anzeigen, ob die empfohlenen Kernmodelle bereitstehen."""
     manager = ModelManager(AppPaths.default())
-    missing = [key for key in ("party-v4", "orli") if not manager.is_installed(key)]
+    missing = [key for key in ("trocr-kurrent-19", "orli") if not manager.is_installed(key)]
     if missing:
         raise typer.Exit(1)
 
 
 @models_app.command("install-core")
 def install_core_models() -> None:
-    """Party v4 und Orli als empfohlenes lokales Modellpaar installieren."""
+    """Kurrent-TrOCR und Orli als empfohlenes lokales Modellpaar installieren."""
     manager = ModelManager(AppPaths.default())
-    for key in ("party-v4", "orli"):
+    for key in ("trocr-kurrent-19", "orli"):
         if manager.is_installed(key):
             console.print(f"[dim]{MODELS[key].name} ist bereits installiert.[/]")
             continue

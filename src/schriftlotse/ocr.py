@@ -257,13 +257,16 @@ class PartyRecognizer:
                 str(input_xml),
                 str(output_xml),
                 "-B",
-                "4",
+                "1",
+                "--max-generated-tokens",
+                "192",
                 "--add-lang-token",
+                "--raise-on-error",
             ]
             process = subprocess.run(
                 command, capture_output=True, text=True, timeout=600, check=False
             )
-            if process.returncode != 0:
+            if process.returncode != 0 or not output_xml.exists():
                 raise RuntimeError(process.stderr.strip() or "Party-Erkennung fehlgeschlagen")
             return parse_recognized(output_xml, self.name, variant)
 

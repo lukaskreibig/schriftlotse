@@ -31,14 +31,14 @@ MODELS: dict[str, ModelSpec] = {
     "party-v4": ModelSpec(
         key="party-v4",
         name="Party v4",
-        purpose="Allgemeine historische Handschrift und Druck",
+        purpose="Experimentelle Hochspeicher-Zweitlesung (nicht für 18-GB-Macs)",
         license="Apache-2.0",
         source="https://zenodo.org/records/20642057",
         kind="file",
         url="https://zenodo.org/api/records/20642057/files/model.safetensors/content",
         checksum="md5:cf165e67061d492b72f600a6a72b7c61",
         filename="model.safetensors",
-        optional=False,
+        optional=True,
     ),
     "orli": ModelSpec(
         key="orli",
@@ -59,7 +59,8 @@ MODELS: dict[str, ModelSpec] = {
         license="MIT",
         source="https://huggingface.co/dh-unibe/trocr-kurrent",
         kind="huggingface",
-        revision="026dc68fd784f214bccd932081b8048e5bfba097",
+        revision="dd026dc68fd784f214bccd932081b8048e5bfba0",
+        optional=False,
     ),
     "trocr-kurrent-early": ModelSpec(
         key="trocr-kurrent-early",
@@ -95,7 +96,7 @@ MODELS: dict[str, ModelSpec] = {
         license="Apache-2.0",
         source="https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
         kind="huggingface",
-        revision="b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+        revision="97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
     ),
 }
 
@@ -171,6 +172,14 @@ class ModelManager:
             repo_id=repo_id,
             revision=spec.revision,
             local_dir=destination,
+            ignore_patterns=[
+                "*.bin",
+                "optimizer.pt",
+                "scheduler.pt",
+                "trainer_state.json",
+                "rng_state.pth",
+                "scaler.pt",
+            ],
         )
         marker = destination / ".schriftlotse-model.json"
         marker.write_text(

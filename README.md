@@ -32,8 +32,8 @@ erste Einrichtung.
 2. `SchriftLotse.command` per Doppelklick öffnen. Beim ersten Download kann macOS einmalig
    **Rechtsklick → Öffnen** verlangen.
 3. Die optionale Installation von Tesseract und deutschen Sprachdaten bestätigen.
-4. Einmalig die empfohlenen freien Kernmodelle Party v4 und Orli (zusammen ca. 1,1 GB)
-   bestätigen. Beide Downloads werden per Prüfsumme kontrolliert.
+4. Einmalig die empfohlenen freien Kernmodelle TrOCR Kurrent und Orli (zusammen ca. 2 GB)
+   bestätigen. Beide Quellen sind auf feste Revisionen bzw. Prüfsummen fixiert.
 5. Die Oberfläche öffnet sich lokal unter `http://127.0.0.1:7860`.
 
 Der Launcher installiert Python 3.12 und die Modelladapter reproduzierbar mit `uv`. Weitere
@@ -82,8 +82,9 @@ Zeilenerkennung. Umlaute, Punkte und kleine Satzzeichen werden nicht aggressiv e
 
 Modellquellen, feste Revisionen, Einsatzzweck und Lizenzen stehen in
 [THIRD_PARTY_MODELS.md](THIRD_PARTY_MODELS.md). Der Basismodus funktioniert mit Tesseract;
-für schwierige Handschrift sind Party v4 und die jahrgangsspezifischen TrOCR-Modelle
-vorgesehen. Kein Modell wird still aktualisiert.
+für schwierige Handschrift sind die jahrgangsspezifischen TrOCR-Modelle vorgesehen. Party v4
+ist wegen seines hohen Speicherbedarfs nur eine experimentelle Option für stärkere Systeme.
+Kein Modell wird still aktualisiert.
 
 ## Archivsuche
 
