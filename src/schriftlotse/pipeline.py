@@ -120,6 +120,15 @@ class ProcessingPipeline:
                             page_start + 0.82 * page_share,
                         )
                     warnings: list[str] = []
+                    if any("+standesformular" in line.model for line in candidate.lines):
+                        warnings.append(
+                            "Gedruckte Standesamtsformulierungen wurden regelgestützt ergänzt; "
+                            "Original-Lesarten stehen in den Alternativen"
+                        )
+                    if candidate.coverage < 0.35:
+                        warnings.append(
+                            "Ergebnis wahrscheinlich unvollständig – zu wenig Textfläche erkannt"
+                        )
                     if candidate.expected_cer > 0.10:
                         warnings.append(
                             "Niedrige Erkennungssicherheit – manuelle Prüfung empfohlen"
