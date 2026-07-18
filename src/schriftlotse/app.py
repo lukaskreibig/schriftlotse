@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -363,6 +363,13 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
     app = FastAPI(title="SchriftLotse", version="0.2.0")
     app.state.schriftlotse = app_state
     app.mount("/static", StaticFiles(directory=web / "static"), name="static")
+
+    @app.middleware("http")
+    async def prevent_stale_local_ui(request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:

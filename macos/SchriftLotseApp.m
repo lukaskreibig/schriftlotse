@@ -14,7 +14,9 @@
     (void)notification;
     self.localURL = [NSURL URLWithString:@"http://127.0.0.1:7860"];
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
-    configuration.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
+    // SchriftLotse stores state in SQLite, not in browser storage. An ephemeral
+    // WebKit store prevents an old stylesheet from surviving an app rebuild.
+    configuration.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
     self.webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     self.webView.navigationDelegate = self;
     self.webView.allowsMagnification = NO;
