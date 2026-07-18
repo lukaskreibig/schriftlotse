@@ -85,6 +85,7 @@ class SettingsPayload(BaseModel):
     default_script: str = "auto"
     openrouter_profile: str = "fast"
     show_preprocessing: bool = True
+    output_token: str | None = None
 
 
 class OpenRouterKeyPayload(BaseModel):
@@ -167,6 +168,7 @@ class ApplicationState:
         self.jobs: dict[str, JobRuntime] = {}
         self.model_jobs: dict[str, ModelInstallRuntime] = {}
         self.authorized_sources: dict[str, Path] = {}
+        self.authorized_output_dirs: dict[str, Path] = {}
         self.downloads: dict[str, Path] = {}
         self.lock = threading.Lock()
         # Apple Silicon unified memory is shared by all local engines. One
@@ -190,6 +192,36 @@ class ApplicationState:
                 self.downloads[token] = path.resolve()
                 entries.append({"id": token, "name": path.name})
         return entries
+
+    def register_output_directory(self, path: Path) -> dict[str, str]:
+        resolved = path.expanduser().resolve()
+        if not resolved.is_dir():
+            raise ValueError("Ausgabeordner existiert nicht")
+        token = uuid.uuid4().hex
+        with self.lock:
+            self.authorized_output_dirs[token] = resolved
+        return {"token": token, "path": str(resolved)}
+
+    def resolve_output_directory(self, value: str, token: str | None) -> Path:
+        with self.lock:
+            authorized = self.authorized_output_dirs.get(token or "")
+        requested = Path(value).expanduser().resolve()
+        if authorized is not None and requested == authorized:
+            resolved = authorized
+        else:
+            resolved = requested
+            home = Path.home().resolve()
+            current = Settings.load(self.paths).output_dir
+            current_path = Path(current).expanduser().resolve() if current else None
+            if not resolved.is_relative_to(home) and resolved != current_path:
+                raise ValueError(
+                    "Ordner außerhalb des Benutzerordners bitte über „Auswählen“ freigeben"
+                )
+        if not resolved.is_dir():
+            raise ValueError("Ausgabeordner existiert nicht; bitte zuerst im Finder anlegen")
+        if not os.access(resolved, os.W_OK):
+            raise ValueError("Ausgabeordner ist nicht beschreibbar")
+        return resolved
 
     def download(self, token: str) -> Path:
         with self.lock:
@@ -696,14 +728,18 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
         output_dir = payload.output_dir.strip() if payload.output_dir else None
         if output_dir:
             try:
-                Path(output_dir).expanduser().mkdir(parents=True, exist_ok=True)
-            except OSError as error:
-                raise HTTPException(
-                    status_code=400, detail=f"Ausgabeordner nicht nutzbar: {error}"
-                ) from error
+                output_dir = str(
+                    app_state.resolve_output_directory(output_dir, payload.output_token)
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
         command = payload.tesseract_command.strip() or "tesseract"
         settings = Settings(
-            **{**payload.model_dump(), "output_dir": output_dir, "tesseract_command": command}
+            **{
+                **payload.model_dump(exclude={"output_token"}),
+                "output_dir": output_dir,
+                "tesseract_command": command,
+            }
         )
         settings.save(app_state.paths)
         app_state.settings = settings
@@ -723,9 +759,12 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
             timeout=120,
             check=False,
         )
-        return (
-            {"path": process.stdout.strip() or None} if process.returncode == 0 else {"path": None}
-        )
+        if process.returncode != 0 or not process.stdout.strip():
+            return {"path": None, "token": None}
+        try:
+            return app_state.register_output_directory(Path(process.stdout.strip()))
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     @app.get("/api/system")
     def system_status() -> dict[str, Any]:

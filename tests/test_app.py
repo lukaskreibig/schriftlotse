@@ -53,12 +53,17 @@ def test_local_health_probe() -> None:
 
 def test_settings_api_persists_visible_configuration(monkeypatch, app_paths) -> None:
     monkeypatch.setattr(AppPaths, "default", classmethod(lambda _cls: app_paths))
-    client = TestClient(create_app())
+    state = ApplicationState()
+    client = TestClient(create_app(state))
+    custom_output = app_paths.output / "custom"
+    custom_output.mkdir(parents=True)
+    authorization = state.register_output_directory(custom_output)
     payload = {
         "advanced_models": False,
         "semantic_search": False,
         "cloud_budget_usd": 0.25,
-        "output_dir": str(app_paths.output / "custom"),
+        "output_dir": str(custom_output),
+        "output_token": authorization["token"],
         "tesseract_command": "tesseract",
         "default_quality": "schnell",
         "default_script": "druck",
@@ -70,7 +75,13 @@ def test_settings_api_persists_visible_configuration(monkeypatch, app_paths) -> 
 
     assert saved.status_code == 200
     assert client.get("/api/settings").json()["default_script"] == "druck"
-    assert (app_paths.output / "custom").is_dir()
+    assert client.get("/api/settings").json()["output_dir"] == str(custom_output.resolve())
+
+    payload["output_dir"] = str(app_paths.data.parent / "untrusted")
+    payload["output_token"] = None
+    rejected = client.put("/api/settings", json=payload)
+    assert rejected.status_code == 400
+    assert "über „Auswählen“ freigeben" in rejected.json()["detail"]
 
 
 def test_upload_keeps_original_filename_for_document_title(monkeypatch, app_paths) -> None:
@@ -92,6 +103,7 @@ def test_sources_and_downloads_use_opaque_capability_tokens(tmp_path) -> None:
     state = ApplicationState.__new__(ApplicationState)
     state.lock = threading.Lock()
     state.authorized_sources = {}
+    state.authorized_output_dirs = {}
     state.downloads = {}
     scan = tmp_path / "privater-scan.jpg"
     scan.write_bytes(b"scan")

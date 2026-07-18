@@ -1,4 +1,4 @@
-const state = { sources: [], job: null, hits: [], selected: null, cloudModels: [], settings: null };
+const state = { sources: [], job: null, hits: [], selected: null, cloudModels: [], settings: null, outputToken: null };
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
@@ -526,6 +526,7 @@ $('save-settings').onclick = async () => {
     semantic_search: $('setting-semantic').checked,
     cloud_budget_usd: Number($('setting-budget').value || 0),
     output_dir: $('setting-output').value.trim() || null,
+    output_token: state.outputToken,
     tesseract_command: $('setting-tesseract').value.trim() || 'tesseract',
     default_quality: $('setting-quality').value,
     default_script: $('setting-script').value,
@@ -543,6 +544,7 @@ $('save-settings').onclick = async () => {
     return;
   }
   state.settings = data;
+  state.outputToken = null;
   $('settings-status').textContent = 'Gespeichert. Gilt für neue Aufträge.';
   setScriptCombobox(data.default_script);
   notify('Einstellungen wurden gespeichert.');
@@ -552,8 +554,12 @@ $('save-settings').onclick = async () => {
 $('pick-output').onclick = async () => {
   const response = await fetch('/api/settings/output-folder', { method: 'POST' });
   const data = await response.json();
-  if (data.path) $('setting-output').value = data.path;
+  if (data.path) {
+    $('setting-output').value = data.path;
+    state.outputToken = data.token;
+  }
 };
+$('setting-output').oninput = () => { state.outputToken = null; };
 
 async function loadKeyStatus(validate = false) {
   $('key-status').textContent = validate ? 'Verbindung zu OpenRouter wird geprüft …' : 'Schlüsselbund wird geprüft …';
