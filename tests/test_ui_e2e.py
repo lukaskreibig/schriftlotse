@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -112,4 +113,68 @@ def test_primary_read_controls_stay_inside_native_viewport(ui_server, width, hei
             assert box["x"] >= 0 and box["y"] >= 0
             assert box["x"] + box["width"] <= width + 1
             assert box["y"] + box["height"] <= height + 1
+        browser.close()
+
+
+def test_search_shows_loading_completion_and_empty_feedback(ui_server) -> None:
+    url, _root = ui_server
+    with playwright.sync_playwright() as runtime:
+        browser = _browser(runtime)
+        page = browser.new_page(viewport={"width": 1320, "height": 860})
+        pending = []
+
+        def hold_search(route) -> None:
+            pending.append(route)
+
+        page.route("**/api/search", hold_search)
+        page.goto(url)
+        page.get_by_role("button", name="Prüfen & suchen").click()
+        page.locator("#query").fill("Hermann")
+        page.locator("#search-button").click()
+
+        page.wait_for_function("() => document.querySelector('#search-button').ariaBusy === 'true'")
+        assert "Suche läuft" in page.locator("#search-button").inner_text()
+        assert "Archiv wird durchsucht" in page.locator("#search-status").inner_text()
+        assert "ähnliche Lesarten" in page.locator("#results").inner_text()
+        assert pending
+
+        pending.pop().fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps([]),
+        )
+        page.wait_for_function("() => document.querySelector('#search-button').ariaBusy === null")
+        assert page.locator("#search-button").inner_text() == "Suchen"
+        assert "0 Treffer in" in page.locator("#search-status").inner_text()
+        assert "Keine Treffer für „Hermann“" in page.locator("#empty-results").inner_text()
+        browser.close()
+
+
+def test_system_refresh_shows_an_in_place_loading_state(ui_server) -> None:
+    url, _root = ui_server
+    with playwright.sync_playwright() as runtime:
+        browser = _browser(runtime)
+        page = browser.new_page(viewport={"width": 1320, "height": 860})
+        page.goto(url)
+        page.get_by_role("button", name="Einstellungen").click()
+        page.locator("#system-status .system-row").first.wait_for()
+
+        pending = []
+
+        def hold_system(route) -> None:
+            pending.append(route)
+
+        page.route("**/api/system", hold_system)
+        page.locator("#refresh-system").click()
+        page.wait_for_function(
+            "() => document.querySelector('#refresh-system').ariaBusy === 'true'"
+        )
+        assert "Wird geprüft" in page.locator("#refresh-system").inner_text()
+        assert "Lokale Komponenten werden geprüft" in page.locator("#system-status").inner_text()
+        assert pending
+
+        pending.pop().continue_()
+        page.wait_for_function("() => document.querySelector('#refresh-system').ariaBusy === null")
+        assert page.locator("#refresh-system").inner_text() == "Aktualisieren"
+        assert page.locator("#system-status .system-row").count() >= 7
         browser.close()
