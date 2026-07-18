@@ -61,6 +61,18 @@ def test_compact_date_in_filename_routes_by_its_year() -> None:
     assert "Jahresangabe 1923 im Dateinamen" in profile.period.evidence
 
 
+def test_unknown_year_gets_only_a_coarse_model_supported_epoch() -> None:
+    profile = profile_page(
+        sample_image(),
+        filename="undatiert.jpg",
+        script_hint=ScriptHint.AUTO,
+        selected_model="trocr-kurrent-early",
+    )
+    assert profile.period.exact_year is None
+    assert (profile.period.year_from, profile.period.year_to) == (1500, 1799)
+    assert profile.period.confidence < 0.5
+
+
 def test_wide_text_strip_is_not_mistaken_for_book_spread() -> None:
     image = Image.new("RGB", (1800, 500), "white")
     draw = ImageDraw.Draw(image)

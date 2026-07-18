@@ -58,11 +58,12 @@ def test_openrouter_uses_privacy_flags(monkeypatch) -> None:
     assert captured["provider"] == {
         "zdr": True,
         "data_collection": "deny",
-        "require_parameters": True,
-        "sort": "latency",
+        "sort": "throughput",
     }
-    assert captured["model"] == "google/gemini-3.5-flash"
+    assert captured["model"] == "anthropic/claude-sonnet-5"
     assert captured["max_tokens"] == 1200
+    assert "response_format" not in captured
+    assert "temperature" not in captured
 
 
 def test_cloud_profiles_have_unique_current_model_ids() -> None:
@@ -71,6 +72,8 @@ def test_cloud_profiles_have_unique_current_model_ids() -> None:
     assert CLOUD_MODEL_OPTIONS["quality"].provider_sort == "throughput"
     assert CLOUD_MODEL_OPTIONS["balanced"].model == "openai/gpt-5.6-luna"
     assert CLOUD_MODEL_OPTIONS["quality"].model == "anthropic/claude-sonnet-5"
+    assert CLOUD_MODEL_OPTIONS["quality"].recommended is True
+    assert CLOUD_MODEL_OPTIONS["balanced"].zdr is False
 
 
 def test_openrouter_key_can_be_validated_without_inference(monkeypatch) -> None:
@@ -82,3 +85,11 @@ def test_openrouter_key_can_be_validated_without_inference(monkeypatch) -> None:
     assert status["validated"] is True
     assert status["label"] == "SchriftLotse-Test"
     assert status["limit_remaining"] == 1.5
+
+
+def test_cloud_format_gate_removes_reasoning_without_rewriting_transcription() -> None:
+    cleaned = OpenRouterReviewer._clean_transcription(
+        "<analysis>Ich überlege.</analysis>\n```text\nTranskription: Johann Schmidt\n```",
+        "Johann Schrnidt",
+    )
+    assert cleaned == "Johann Schmidt"

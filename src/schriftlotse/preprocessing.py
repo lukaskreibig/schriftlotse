@@ -433,11 +433,23 @@ def profile_page(
             evidence=list(evidence),
         )
     else:
+        if selected_model == "trocr-kurrent-early":
+            year_from, year_to = 1500, 1799
+            period_evidence = "grobe Epoche aus der stärksten frühen Kurrent-Lesung"
+            period_confidence = 0.42
+        elif selected_model == "trocr-medieval":
+            year_from, year_to = 800, 1499
+            period_evidence = "grobe Epoche aus der stärksten mittelalterlichen Lesung"
+            period_confidence = 0.42
+        else:
+            year_from, year_to = 1800, 1945
+            period_evidence = "nur grobe Schätzung aus dem Modellprofil"
+            period_confidence = 0.30
         period = PeriodEstimate(
-            year_from=1800,
-            year_to=1945,
-            confidence=0.30,
-            evidence=["nur grobe Schätzung aus dem Modellprofil"],
+            year_from=year_from,
+            year_to=year_to,
+            confidence=period_confidence,
+            evidence=[period_evidence],
         )
     if script_hint == ScriptHint.PRINT:
         script = ScriptClass.FRAKTUR if "frak" in selected_model else ScriptClass.ANTIQUA

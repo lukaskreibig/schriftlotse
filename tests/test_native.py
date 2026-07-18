@@ -16,3 +16,7 @@ def test_native_wrapper_owns_an_identified_dynamic_backend() -> None:
     assert "unusedLoopbackPort" in SOURCE
     assert "SCHRIFTLOTSE_INSTANCE_TOKEN" in SOURCE
     assert 'URLByAppendingPathComponent:@"api/health"' in SOURCE
+
+
+def test_native_wrapper_exposes_homebrew_tools_to_finder_launches() -> None:
+    assert "/opt/homebrew/bin:/usr/local/bin:/opt/local/bin" in SOURCE

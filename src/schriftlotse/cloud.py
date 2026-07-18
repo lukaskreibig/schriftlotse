@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import os
+import re
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -24,6 +25,9 @@ class CloudModelOption:
     price_hint: str
     recommended: bool = False
     provider_sort: str = "latency"
+    zdr: bool = True
+    experimental: bool = False
+    best_for: str = "Einzelne schwierige Textstellen"
 
 
 # Verified against OpenRouter's live model catalog on 2026-07-18.  These are
@@ -34,10 +38,10 @@ CLOUD_MODEL_OPTIONS: dict[str, CloudModelOption] = {
     "fast": CloudModelOption(
         key="fast",
         model="google/gemini-3.5-flash",
-        label="Gemini 3.5 Flash · schnell (empfohlen)",
-        description="Schnelles Visionmodell für die tägliche Zweitprüfung.",
+        label="Gemini 3.5 Flash · Formulare & Seiten",
+        description="Schnell und im Test stark bei Formularen und vollständigen Seiten.",
         price_hint="$1,50 Eingabe / $9 Ausgabe je 1 Mio. Token",
-        recommended=True,
+        best_for="Formulare, Tabellen und gut strukturierte Seiten",
     ),
     "balanced": CloudModelOption(
         key="balanced",
@@ -45,6 +49,9 @@ CLOUD_MODEL_OPTIONS: dict[str, CloudModelOption] = {
         label="GPT-5.6 Luna · ausgewogen",
         description="Schnelle, kostengünstige hochwertige Vergleichslesung.",
         price_hint="$1 Eingabe / $6 Ausgabe je 1 Mio. Token",
+        zdr=False,
+        experimental=True,
+        best_for="Experimentelle Vergleichslesung; nicht für sensible Quellen",
     ),
     "ocr_value": CloudModelOption(
         key="ocr_value",
@@ -52,14 +59,18 @@ CLOUD_MODEL_OPTIONS: dict[str, CloudModelOption] = {
         label="OCR-Preis/Leistung",
         description="Großes offenes Visionmodell mit Dokument- und Tabellenfokus.",
         price_hint="ab $0,21 Eingabe / $1,90 Ausgabe je 1 Mio. Token",
+        experimental=True,
+        best_for="Preiswerte experimentelle Gegenprobe",
     ),
     "quality": CloudModelOption(
         key="quality",
         model="anthropic/claude-sonnet-5",
-        label="Claude Sonnet 5 · sorgfältig",
-        description="Sorgfältige Zweitprüfung für besonders schwierige Einzelstellen.",
+        label="Claude Sonnet 5 · Textstellen (empfohlen)",
+        description="Im Goldstandard-Test die zuverlässigste Cloud-Zweitlesung.",
         price_hint="$2 Eingabe / $10 Ausgabe je 1 Mio. Token",
+        recommended=True,
         provider_sort="throughput",
+        best_for="Schwierige Zeilen und konservative, originalgetreue Lesungen",
     ),
 }
 
@@ -131,7 +142,7 @@ class OpenRouterReviewer:
 
     def choose_model(self, script_hint: ScriptHint) -> str:
         del script_hint
-        return CLOUD_MODEL_OPTIONS["fast"].model
+        return CLOUD_MODEL_OPTIONS["quality"].model
 
     @staticmethod
     def _data_url(image: Image.Image) -> str:
@@ -139,6 +150,26 @@ class OpenRouterReviewer:
         image.convert("RGB").save(buffer, "JPEG", quality=92, optimize=True)
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         return f"data:image/jpeg;base64,{encoded}"
+
+    @staticmethod
+    def _clean_transcription(content: str, local_text: str) -> str:
+        text = content.strip()
+        text = re.sub(r"<analysis>.*?</analysis>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = text.strip()
+        text = text.removeprefix("```text").removeprefix("```").removesuffix("```").strip()
+        text = re.sub(
+            r"^(?:Transkription|Antwort|Ergebnis)\s*:\s*",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+        if re.match(r"^(?:I cannot|I can't|Es tut mir leid|Ich kann)", text, re.IGNORECASE):
+            raise RuntimeError("Das Cloud-Modell hat die Transkription abgelehnt")
+        plausible_limit = max(2_000, len(local_text) * 8)
+        if len(text) > plausible_limit:
+            raise RuntimeError("Cloud-Ausgabe ist für den Ausschnitt unplausibel lang")
+        return text
 
     def review(
         self,
@@ -148,8 +179,9 @@ class OpenRouterReviewer:
         year: int | None,
         script_hint: ScriptHint,
         model: str | None = None,
-        profile: str = "fast",
+        profile: str = "quality",
     ) -> CloudReview:
+        del optimized  # Kept in the API for callers; one image avoids model confusion.
         if not self.api_key:
             raise RuntimeError("Kein OpenRouter-Schlüssel im macOS-Schlüsselbund")
         if self.spent_usd >= self.budget_usd:
@@ -157,12 +189,17 @@ class OpenRouterReviewer:
         option = self.option(profile)
         selected = model or option.model
         prompt = (
-            "Transkribiere den deutschsprachigen historischen Text originalgetreu. "
-            "Bewahre historische Rechtschreibung, Großschreibung und Zeichensetzung. "
-            "Erfinde nichts. Markiere unleserliche Stellen als ⟦unleserlich⟧ und unsichere "
-            "Lesungen als ⟦Lesung?⟧. Antworte ausschließlich als JSON mit den Feldern "
-            '"text", "confidence" (0 bis 1) und "notes". '
-            f"Angegebenes Jahr: {year or 'unbekannt'}. Lokale Vorlesung: {local_text}"
+            "Du bist ein konservativer Transkriptor historischer deutscher Quellen. "
+            "Gib ausschließlich die sichtbare Transkription zurück, ohne Einleitung, "
+            "Erklärung, Markdown oder Modernisierung. Bewahre Zeilenumbrüche, historische "
+            "Rechtschreibung, Großschreibung und Zeichensetzung. Dies ist eine diplomatische "
+            "Zeichenabschrift: Korrigiere niemals Grammatik, Flexion, Bindestriche, Abkürzungen "
+            "oder vermeintliche Schreibfehler. Schreibe nur Zeichen, die im Bild stehen. "
+            "Erfinde oder ergänze nichts. "
+            "Unleserliches: ⟦unleserlich⟧; unsichere Lesung: ⟦Lesung?⟧. "
+            f"Kontextjahr: {year or 'unbekannt'}; Schriftangabe: {script_hint.value}. "
+            f"Eine lokale, unbestätigte Vorlesung lautet: {local_text or 'keine'}. "
+            "Nutze sie nur als Hinweis und korrigiere sie anhand des Bildes."
         )
         payload = {
             "model": selected,
@@ -172,17 +209,13 @@ class OpenRouterReviewer:
                     "content": [
                         {"type": "text", "text": prompt},
                         {"type": "image_url", "image_url": {"url": self._data_url(original)}},
-                        {"type": "image_url", "image_url": {"url": self._data_url(optimized)}},
                     ],
                 }
             ],
-            "temperature": 0,
             "max_tokens": 1200,
-            "response_format": {"type": "json_object"},
             "provider": {
-                "zdr": True,
+                "zdr": option.zdr,
                 "data_collection": "deny",
-                "require_parameters": True,
                 "sort": option.provider_sort,
             },
             "usage": {"include": True},
@@ -200,20 +233,35 @@ class OpenRouterReviewer:
         )
         response.raise_for_status()
         body = response.json()
+        cost = float(body.get("usage", {}).get("cost", 0.0) or 0.0)
+        if self.spent_usd + cost > self.budget_usd:
+            raise RuntimeError("Antwort würde das Cloud-Kostenlimit überschreiten")
+        self.spent_usd += cost
         content: Any = body["choices"][0]["message"]["content"]
         if isinstance(content, list):
             content = "".join(
                 str(item.get("text", "")) for item in content if isinstance(item, dict)
             )
-        parsed = json.loads(str(content))
-        cost = float(body.get("usage", {}).get("cost", 0.0) or 0.0)
-        if self.spent_usd + cost > self.budget_usd:
-            raise RuntimeError("Antwort würde das Cloud-Kostenlimit überschreiten")
-        self.spent_usd += cost
+        text = self._clean_transcription(str(content), local_text)
+        notes = ""
+        confidence = 0.5
+        # Backwards-compatible parsing for providers that still return a JSON
+        # object despite the plain-text contract.
+        candidate = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        if candidate.startswith("{"):
+            try:
+                parsed = json.loads(candidate)
+                text = str(parsed.get("text", "")).strip()
+                notes = str(parsed.get("notes", ""))
+                confidence = max(0.0, min(float(parsed.get("confidence", 0.5)), 1.0))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if not text:
+            raise RuntimeError("Das Cloud-Modell hat keine Transkription geliefert")
         return CloudReview(
-            text=str(parsed.get("text", "")).strip(),
-            confidence=max(0.0, min(float(parsed.get("confidence", 0.5)), 1.0)),
+            text=text,
+            confidence=confidence,
             model=selected,
             cost=cost,
-            notes=str(parsed.get("notes", "")),
+            notes=notes,
         )

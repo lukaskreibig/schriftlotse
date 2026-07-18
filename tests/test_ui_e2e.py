@@ -105,6 +105,13 @@ def test_primary_read_controls_stay_inside_native_viewport(ui_server, width, hei
             assert box["x"] >= 0 and box["y"] >= 0
             assert box["x"] + box["width"] <= width + 1
             assert box["y"] + box["height"] <= height + 1
+        page.locator('input[value="beste_qualitaet"]').check()
+        assert page.locator("#start").is_visible()
+        assert page.locator("#start").evaluate(
+            "element => { const r = element.getBoundingClientRect(); "
+            "const top = document.elementFromPoint(r.left + r.width / 2, r.top + 2); "
+            "return top === element || element.contains(top); }"
+        )
         page.get_by_role("button", name="Einstellungen").click()
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         for selector in ("#save-settings", "#openrouter-key", "#key-status", "#system-status"):

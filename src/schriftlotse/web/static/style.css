@@ -66,6 +66,11 @@ h3 { color: #24464d; }
 .inline-operation[hidden] { display: none; }
 .source-head { width: 100%; display: flex; justify-content: space-between; margin-top: 24px; padding-top: 15px; border-top: 1px solid #e8e5de; text-align: left; }
 .source-list { width: 100%; max-height: 128px; overflow: auto; margin-top: 5px; text-align: left; }
+.import-preview { width: 100%; display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--muted); font-size: 12px; text-align: left; }
+.import-preview .spinner { margin-right: 5px; }
+.import-preview.is-error { color: var(--danger); }
+.import-option { width: 100%; display: flex; align-items: center; gap: 7px; margin-top: 5px; color: var(--muted); font-size: 12px; text-align: left; }
+.import-option input { width: 14px; height: 14px; margin: 0; }
 .source-item { display: flex; justify-content: space-between; gap: 12px; padding: 6px 3px; border-bottom: 1px solid #f0eee8; font-size: 13px; }
 .source-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-item button { flex: 0 0 auto; border: 0; padding: 0 5px; background: transparent; color: var(--muted); }
@@ -81,6 +86,10 @@ fieldset { min-width: 0; }
 .profile-option span, .profile-option small { display: block; }
 .profile-option small { margin-top: 3px; color: var(--muted); font-weight: 450; }
 .profile-option em { margin-left: 5px; border-radius: 99px; background: var(--gold-soft); color: #8c621c; padding: 2px 6px; font-size: 9px; font-style: normal; letter-spacing: .04em; text-transform: uppercase; }
+.adaptive-cloud { display: grid; grid-template-columns: minmax(0, 1fr) 105px; gap: 8px; padding: 8px 10px; border: 1px solid #d9e3e1; border-radius: 10px; background: #f6faf9; }
+.adaptive-cloud[hidden] { display: none; }
+.adaptive-cloud label { font-size: 11px; }
+.adaptive-cloud select { margin-top: 2px; padding: 6px 7px; }
 .two-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
 label { display: block; font-weight: 680; }
 label small { color: var(--muted); font-weight: 450; }
@@ -163,6 +172,7 @@ td:nth-child(2) { white-space: nowrap; }
 .status-copy { color: var(--muted); font-size: 13px; }
 .status-copy.is-error { color: var(--danger); }
 .readings { display: grid; gap: 6px; margin: 9px 0 13px; }
+.engine-summary { display: block; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .reading { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 9px; padding: 8px 10px; border: 1px solid #e1ded6; border-radius: 9px; background: #faf9f6; cursor: pointer; text-align: left; font-weight: 450; }
 .reading:hover { border-color: #9eafad; }
 .reading small { display: block; color: var(--muted); }
@@ -201,7 +211,7 @@ td:nth-child(2) { white-space: nowrap; }
 .system-status { display: grid; gap: 7px; margin-top: 12px; }
 .system-row { display: grid; gap: 1px; padding-bottom: 7px; border-bottom: 1px solid #ece9e2; }
 .system-row span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-.system-row strong { overflow: hidden; color: #29474d; font-size: 12px; text-overflow: ellipsis; }
+.system-row strong { overflow: hidden; color: #29474d; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #47a269; }
 .status-dot.warn { background: #cc8e2a; }
 
@@ -220,6 +230,12 @@ dialog { max-width: 470px; border: 1px solid var(--line); border-radius: 15px; b
 dialog::backdrop { background: rgba(15,35,39,.35); }
 dialog h3 { margin-top: 0; }
 dialog .button-row { justify-content: flex-end; }
+.import-dialog { width: min(900px, calc(100vw - 48px)); max-height: min(680px, calc(100vh - 48px)); }
+.import-dialog form { display: flex; flex-direction: column; min-height: 0; }
+.import-table-wrap { max-height: 460px; overflow: auto; margin: 8px 0 15px; border: 1px solid var(--line); border-radius: 10px; }
+.import-dialog td:first-child { min-width: 330px; }
+.import-dialog td small { display: block; max-width: 460px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.import-dialog input, .import-dialog select { margin: 0; }
 
 /* The native window is a fixed workspace, not a long marketing page. At its
    desktop size every primary control stays visible; only genuinely unbounded
@@ -263,6 +279,11 @@ dialog .button-row { justify-content: flex-end; }
   input, select, textarea { margin-top: 3px; padding: 8px 9px; }
   .hint { margin: 7px 0; font-size: 12px; line-height: 1.3; }
   button.large { margin-top: 7px; padding: 10px 13px; }
+  .adaptive-cloud { gap: 6px; padding: 5px 8px; }
+  .adaptive-cloud select { padding: 5px 6px; }
+  .adaptive-cloud + .two-fields { margin-top: 5px; }
+  .settings-card:has(.adaptive-cloud:not([hidden])) .profile-option { margin: 3px 0; padding: 6px 9px; }
+  .settings-card:has(.adaptive-cloud:not([hidden])) button.large { margin-top: 5px; padding: 8px 12px; }
 
   #read .status { flex: 0 0 auto; margin-top: 11px; padding: 10px 15px; }
   .status-top strong { font-size: 15px; }
@@ -292,6 +313,7 @@ dialog .button-row { justify-content: flex-end; }
   .cloud-model-card { padding: 4px 8px; }
 
   #settings .settings-workspace { flex: 1 1 auto; min-height: 0; }
+  #settings .settings-workspace, #settings .system-status { overflow: hidden; }
   #settings .card { height: 100%; min-height: 0; overflow: hidden; padding: 13px; }
   #settings .cloud-catalog { max-height: none; overflow: visible; }
   #settings .cloud-model-card { padding: 2px 8px; }

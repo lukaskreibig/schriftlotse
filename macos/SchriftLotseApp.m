@@ -109,6 +109,9 @@
     NSMutableDictionary<NSString *, NSString *> *environment =
         [NSProcessInfo.processInfo.environment mutableCopy];
     environment[@"SCHRIFTLOTSE_INSTANCE_TOKEN"] = self.instanceToken;
+    NSString *currentPath = environment[@"PATH"] ?: @"/usr/bin:/bin";
+    environment[@"PATH"] = [NSString stringWithFormat:
+        @"/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:%@", currentPath];
     process.environment = environment;
     NSString *logDirectory = @"~/Library/Logs".stringByExpandingTildeInPath;
     NSString *logPath = [logDirectory stringByAppendingPathComponent:@"SchriftLotse.log"];

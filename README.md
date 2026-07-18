@@ -9,7 +9,8 @@ Schreibmaschinentext von etwa 1800 bis 1945; ältere Quellen werden bestmöglich
 
 ## Funktionen
 
-- lokale Stapelverarbeitung; OpenRouter nur für einen ausdrücklich gewählten Ausschnitt
+- lokale Stapelverarbeitung; optionale adaptive Cloud-Zweitprüfung nur nach Auftragsfreigabe
+- Importvorschau mit getrennten Einzelbildern, Serienvorschlag und Metadaten je Dokument
 - automatische Orientierung, konservativer Randbeschnitt und Buchfalztrennung
 - adaptive Varianten für Beleuchtung, Kontrast, Schatten und Binarisierung
 - goldstandardgestütztes Routing freier Tesseract-, Kraken-, TrOCR- und Party-Modelle;
@@ -62,6 +63,8 @@ uv run schriftlotse gui
 ## Bedienung
 
 - **Entziffern:** Dateien ablegen oder einen Ordner wählen, optional Jahr und Schrift angeben.
+  Lose Bilder gelten zunächst als eigene Dokumente. Über **Prüfen & Metadaten** lassen sich
+  Titel, Jahr und Schrift pro Dokument setzen; echte Bildserien können bewusst gruppiert werden.
 - **Archivsuche:** intelligent, exakt, nach Namen oder nach Bedeutung suchen; Treffer öffnen
   direkt die richtige logische Seite und Zeile. Unsichere Stellen lassen sich priorisiert
   abarbeiten; anschließend erzeugt **Aktuelle Fassung exportieren** alle Ausgabeformate neu.
@@ -82,6 +85,9 @@ weiterhin die zuverlässigste Modellsteuerung.
 - **Beste lokale Qualität (Standard):** das epochenpassende TrOCR und CHURRO 3B MLX 8-Bit
   werden verglichen. Bei bekanntem Jahr priorisiert der Router den am unabhängigen
   Goldstandard geprüften Spezialisten; CHURRO bleibt Ganzseiten-Zweitleser und Fallback.
+- **Beste Qualität:** dieselbe lokale Pipeline; anschließend werden höchstens vier besonders
+  unsichere Zeilen je Seite bis zum bestätigten Auftragsbudget per Cloud gegengelesen. Die
+  Cloud-Fassung bleibt eine eigene, unbestätigte Lesung.
 
 TrOCR nutzt auf dem M3 das MPS-Backend. Kraken/UB und Party laufen auf macOS über den stabilen
 CPU-Pfad. CHURRO nutzt MLX/Metal und erhält gezielt die beleuchtungsnormalisierte Seite. Seine
@@ -136,23 +142,27 @@ mögliche Suchspur erhalten.
 ## Datenschutz
 
 - Bindung ausschließlich an `127.0.0.1`, keine öffentliche Freigabe
-- OpenRouter nur nach Klick auf eine konkrete Fundstelle
-- ZDR und `data_collection: deny`; Key im macOS-Schlüsselbund
+- OpenRouter nur nach Klick auf eine Fundstelle oder nach ausdrücklicher Freigabe des Profils
+  **Beste Qualität** samt Kostenlimit
+- `data_collection: deny` für alle Profile; ZDR wird nur bei entsprechend verfügbaren
+  Endpunkten verlangt und in der Oberfläche pro Modell ausgewiesen
 - lokale Pfade und Modellstatus über `uv run schriftlotse doctor`
 
 Für die optionale OpenRouter-Zweitprüfung stehen vier explizite, reproduzierbare Profile bereit:
 
-- **Schnell:** Gemini 3.5 Flash (Standard)
-- **Ausgewogen:** GPT-5.6 Luna
+- **Formulare & Seiten:** Gemini 3.5 Flash
+- **Ausgewogen/experimentell:** GPT-5.6 Luna (derzeit ohne ZDR-Endpunkt)
 - **OCR-Preis/Leistung:** Qwen3 VL 235B A22B Instruct
-- **Sorgfältig:** Claude Sonnet 5
+- **Textstellen (Standard):** Claude Sonnet 5
 
 Die IDs und Preise wurden am 18. Juli 2026 gegen den Live-Katalog geprüft. Es gibt keinen
 öffentlichen Benchmark, der diese Modelle belastbar auf genau deutscher Kurrent dieses
 Bestands vergleicht; deshalb kann die Benchmark-CLI acht private Goldausschnitte kontrolliert
 gegen alle vier Modelle testen. Die Bezeichnungen sind Empfehlungen, keine Garantie.
-Pro Aufruf werden ZDR, `data_collection: deny`, strukturierte Ausgabe und ein nutzerseitiges
-Kostenlimit verlangt. Ohne API-Schlüssel bleibt die Funktion vollständig inaktiv.
+Die App fordert eine reine Transkription ohne JSON-Zwang an, entfernt klar abgegrenzte
+Reasoning-/Markdown-Hüllen lokal und verwirft leere, abgelehnte oder unplausibel lange
+Antworten. Modell, Laufzeit, Kosten und Fehler werden dauerhaft protokolliert. Ohne
+API-Schlüssel bleibt die Funktion vollständig inaktiv.
 
 ## Qualitätsgrenzen
 

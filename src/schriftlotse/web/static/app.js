@@ -1,6 +1,7 @@
 const state = {
   sources: [], job: null, hits: [], selected: null, cloudModels: [], settings: null,
-  outputToken: null, searchRequest: 0, hitRequest: 0, jobEvents: null
+  outputToken: null, searchRequest: 0, hitRequest: 0, previewRequest: 0, jobEvents: null,
+  importDocuments: [], documentMetadata: {}
 };
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({
@@ -150,9 +151,14 @@ function setupCombobox(root) {
 document.querySelectorAll('.combobox').forEach(setupCombobox);
 
 document.querySelectorAll('input[name="quality"]').forEach(input => {
-  input.onchange = () => document.querySelectorAll('.profile-option').forEach(label => {
-    label.classList.toggle('selected', label.querySelector('input').checked);
-  });
+  input.onchange = () => {
+    document.querySelectorAll('.profile-option').forEach(label => {
+      label.classList.toggle('selected', label.querySelector('input').checked);
+    });
+    const adaptive = input.value === 'beste_qualitaet' && input.checked;
+    $('adaptive-cloud').hidden = !adaptive;
+    $('routing-hint').hidden = adaptive;
+  };
 });
 
 function basename(path) {
@@ -173,7 +179,68 @@ function renderSources() {
       renderSources();
     };
   });
+  loadImportPreview();
 }
+
+async function loadImportPreview() {
+  const preview = $('import-preview');
+  const requestId = ++state.previewRequest;
+  if (!state.sources.length) { preview.hidden = true; preview.textContent = ''; return; }
+  preview.hidden = false;
+  preview.innerHTML = '<span class="spinner" aria-hidden="true"></span> Import wird geprüft …';
+  try {
+    const response = await fetch('/api/import-preview', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sources: state.sources.map(source => source.id),
+        group_images_by_folder: $('group-images').checked
+      })
+    });
+    if (!response.ok) throw new Error(await responseError(response, 'Importvorschau fehlgeschlagen.'));
+    const data = await response.json();
+    if (requestId !== state.previewRequest) return;
+    state.importDocuments = data.documents || [];
+    const series = data.series_suggestions?.length && !$('group-images').checked
+      ? ` · ${data.series_suggestions.length} mögliche Bildserie${data.series_suggestions.length === 1 ? '' : 'n'}` : '';
+    preview.classList.remove('is-error');
+    preview.innerHTML = `<span>${data.document_count} Dokument${data.document_count === 1 ? '' : 'e'} · ${data.page_count} Seite${data.page_count === 1 ? '' : 'n'}${esc(series)}</span><button type="button" id="review-import" class="text-button">Prüfen & Metadaten</button>`;
+    $('review-import').onclick = openImportDialog;
+  } catch (error) {
+    if (requestId === state.previewRequest) {
+      preview.textContent = error.message;
+      preview.classList.add('is-error');
+    }
+  }
+}
+
+$('group-images').onchange = loadImportPreview;
+
+function openImportDialog() {
+  const rows = state.importDocuments;
+  $('import-dialog-count').textContent = `${rows.length} Dokument${rows.length === 1 ? '' : 'e'}`;
+  $('import-documents').innerHTML = rows.map(document => {
+    const saved = state.documentMetadata[document.id] || {};
+    return `<tr data-document-id="${esc(document.id)}"><td><input class="doc-title" value="${esc(saved.title ?? document.title)}" aria-label="Titel ${esc(document.title)}"><small>${document.pages} Seite${document.pages === 1 ? '' : 'n'} · ${esc(document.files.join(', '))}</small></td><td><input class="doc-year" type="number" min="800" max="2100" value="${esc(saved.year ?? '')}" placeholder="auto" aria-label="Jahr ${esc(document.title)}"></td><td><select class="doc-script" aria-label="Schrift ${esc(document.title)}"><option value="auto">Automatisch</option><option value="handschrift">Handschrift</option><option value="druck">Druck</option><option value="schreibmaschine">Schreibmaschine</option></select></td></tr>`;
+  }).join('');
+  rows.forEach(document => {
+    const row = [...$('import-documents').querySelectorAll('tr')].find(item => item.dataset.documentId === document.id);
+    if (row) row.querySelector('.doc-script').value = state.documentMetadata[document.id]?.script_hint || 'auto';
+  });
+  $('import-dialog').showModal();
+}
+
+$('import-dialog').onclose = () => {
+  if ($('import-dialog').returnValue !== 'confirm') return;
+  $('import-documents').querySelectorAll('tr').forEach(row => {
+    const year = row.querySelector('.doc-year').value;
+    state.documentMetadata[row.dataset.documentId] = {
+      title: row.querySelector('.doc-title').value.trim(),
+      year: year ? Number(year) : null,
+      script_hint: row.querySelector('.doc-script').value
+    };
+  });
+  notify('Dokumentmetadaten übernommen.');
+};
 
 $('clear-sources').onclick = () => { state.sources = []; renderSources(); };
 
@@ -272,13 +339,27 @@ $('folder').onclick = async () => {
 
 $('start').onclick = async () => {
   if (!state.sources.length) { notify('Bitte zuerst Dateien oder einen Ordner auswählen.', true); return; }
+  const quality = document.querySelector('input[name="quality"]:checked').value;
+  const cloud = quality === 'beste_qualitaet';
+  const cloudOption = state.cloudModels.find(model => model.key === $('job-cloud-model').value);
+  if (cloud) {
+    const budget = Number($('job-cloud-budget').value);
+    const approved = await askConfirmation(
+      'Adaptive Cloud-Prüfung erlauben?',
+      `SchriftLotse arbeitet zuerst lokal und darf danach nur unsichere Ausschnitte an ${cloudOption?.label || 'OpenRouter'} senden. Hartes Auftragslimit: ${budget.toFixed(2)} $.`
+    );
+    if (!approved) return;
+  }
   const payload = {
     sources: state.sources.map(source => source.id),
     year: $('year').value ? Number($('year').value) : null,
     script: $('script').value,
-    quality: document.querySelector('input[name="quality"]:checked').value,
-    cloud: false,
-    cloud_budget_usd: 1
+    quality,
+    cloud,
+    cloud_budget_usd: cloud ? Number($('job-cloud-budget').value) : 0,
+    cloud_model_profile: $('job-cloud-model').value || 'quality',
+    group_images_by_folder: $('group-images').checked,
+    document_metadata: state.documentMetadata
   };
   await withButtonBusy($('start'), 'Auftrag wird vorbereitet …', async () => {
     $('status-message').textContent = 'Auftrag wird vorbereitet …';
@@ -517,9 +598,12 @@ async function showHit(hit) {
     const key = `${reading.model}\n${reading.text}`;
     if (!seen.has(key)) { seen.add(key); unique.push(reading); }
   });
-  $('readings').innerHTML = unique.length > 1 ? '<strong>Andere Modell-Lesungen</strong>' + unique.map((reading, index) =>
+  const successfulRuns = (details.engine_runs || []).filter(run => run.success);
+  const runSummary = successfulRuns.length
+    ? `<small class="engine-summary">Seitenläufe: ${successfulRuns.map(run => `${esc(run.engine)} · ${esc(run.backend)} · ${Number(run.duration_seconds).toFixed(1)} s`).join(' / ')}</small>` : '';
+  $('readings').innerHTML = (unique.length > 1 ? '<strong>Andere Modell-Lesungen</strong>' + unique.map((reading, index) =>
     `<button class="reading" data-reading="${index}"><span>${esc(reading.text)}<small>${esc(reading.model)} · ${esc(reading.kind)}</small></span><span>${Math.round(Number(reading.confidence) * 100)} %</span></button>`
-  ).join('') : '';
+  ).join('') : '') + runSummary;
   $('readings').querySelectorAll('[data-reading]').forEach(button => {
     button.onclick = () => { $('correction').value = unique[Number(button.dataset.reading)].text; };
   });
@@ -608,21 +692,28 @@ async function loadCloudModels() {
   $('setting-cloud-model').innerHTML = state.cloudModels.map(option =>
     `<option value="${esc(option.key)}">${esc(option.label)}</option>`
   ).join('');
+  $('job-cloud-model').innerHTML = state.cloudModels.map(option =>
+    `<option value="${esc(option.key)}">${esc(option.label)}</option>`
+  ).join('');
   $('cloud-model').disabled = false;
   $('setting-cloud-model').disabled = false;
   if (state.settings?.openrouter_profile) {
     $('cloud-model').value = state.settings.openrouter_profile;
     $('setting-cloud-model').value = state.settings.openrouter_profile;
+    $('job-cloud-model').value = state.settings.openrouter_profile;
   }
   renderCloudHelp();
   $('cloud-catalog').innerHTML = state.cloudModels.map(option =>
-    `<div class="cloud-model-card ${option.recommended ? 'recommended' : ''}"><strong>${esc(option.label)}</strong><code>${esc(option.model)}</code><small>${esc(option.description)} ${esc(option.price_hint)}</small></div>`
+    `<div class="cloud-model-card ${option.recommended ? 'recommended' : ''}"><strong>${esc(option.label)}</strong><code>${esc(option.model)}</code><small>${esc(option.best_for)} · ${option.zdr ? 'ZDR verfügbar' : 'kein ZDR'}${option.experimental ? ' · experimentell' : ''}</small></div>`
   ).join('');
 }
 
 function renderCloudHelp() {
   const option = state.cloudModels.find(model => model.key === $('cloud-model').value);
   $('cloud-model-help').textContent = option ? `${option.model} · ${option.description} ${option.price_hint}.` : '';
+  $('cloud-privacy').textContent = option
+    ? `${option.zdr ? 'ZDR wird verlangt' : 'Kein ZDR-Endpunkt verfügbar'} · Datensammlung wird abgelehnt${option.experimental ? ' · experimentelles Profil' : ''}`
+    : 'Datenschutzprofil nicht verfügbar';
 }
 $('cloud-model').onchange = renderCloudHelp;
 
@@ -910,8 +1001,10 @@ async function loadSystemStatus(button = null) {
   const rows = [
     ['Archiv', `${data.documents} Dokumente · ${data.pages} Seiten · ${data.lines} Zeilen`],
     ['Lokale Modelle', `${data.models_installed} von ${data.models_total} installiert`],
-    ['Tesseract', data.tesseract_available ? 'bereit' : 'nicht gefunden', !data.tesseract_available],
+    ['Tesseract', data.tesseract_available ? `bereit · ${data.tesseract_path || 'automatisch gefunden'}` : 'nicht gefunden', !data.tesseract_available],
     ['OpenRouter', data.openrouter_configured ? 'Schlüssel gespeichert' : 'nicht eingerichtet', !data.openrouter_configured],
+    ['Bestätigte Referenz', `${data.ground_truth?.verified_lines || 0} Zeilen in ${data.ground_truth?.documents || 0} Dokumenten`],
+    ['Cloud-Nutzung', `${data.cloud_usage?.requests || 0} Prüfungen · $${Number(data.cloud_usage?.cost_usd || 0).toFixed(4)}`],
     ['Ausgabe', data.output],
     ['Datenbank', data.database],
     ['Version', data.version]

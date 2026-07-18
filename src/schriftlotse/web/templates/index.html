@@ -32,6 +32,8 @@
           <div id="drop-status" class="inline-operation" role="status" aria-live="polite" hidden></div>
           <div class="source-head"><strong id="source-count">Noch nichts ausgewählt</strong><button id="clear-sources" class="text-button" hidden>Liste leeren</button></div>
           <div id="sources" class="source-list"></div>
+          <div id="import-preview" class="import-preview" role="status" aria-live="polite" hidden></div>
+          <label class="import-option"><input id="group-images" type="checkbox"><span>Bildserien je Ordner zusammenfassen</span></label>
         </div>
 
         <div class="card settings-card">
@@ -47,10 +49,14 @@
               <span><strong>Beste lokale Qualität <em>Empfohlen</em></strong><small>Das passende TrOCR-Modell und CHURRO vergleichen ihre Lesungen; der Goldstandard entscheidet über die Priorität.</small></span>
             </label>
             <label class="profile-option">
-              <input type="radio" name="quality" value="lizenzklar">
-              <span><strong>Nur lizenzklare Modelle</strong><small>Freie TrOCR-, Kraken- und Tesseract-Modelle ohne CHURRO.</small></span>
+              <input type="radio" name="quality" value="beste_qualitaet">
+              <span><strong>Beste Qualität</strong><small>Lokal vorlesen, nur unsichere Ausschnitte kontrolliert per Cloud prüfen.</small></span>
             </label>
           </fieldset>
+          <div id="adaptive-cloud" class="adaptive-cloud" hidden>
+            <label>Cloud-Zweitleser<select id="job-cloud-model"></select></label>
+            <label>Kostenlimit<select id="job-cloud-budget"><option value="0.25">0,25 $</option><option value="0.50" selected>0,50 $</option><option value="1.00">1,00 $</option><option value="2.00">2,00 $</option></select></label>
+          </div>
           <div class="two-fields">
             <label>Jahr <small>optional</small><input id="year" type="number" min="800" max="2100" placeholder="z. B. 1872"></label>
             <label>Schriftart
@@ -97,7 +103,7 @@
             <label>Transkription<textarea id="correction" rows="5"></textarea></label>
             <div id="readings" class="readings"></div>
             <div class="button-row"><button id="save-correction" class="primary">Korrektur bestätigen</button><button id="export-current">Aktuelle Fassung exportieren</button><span id="correction-status" class="status-copy"></span></div>
-            <details class="cloud-box"><summary>Mit einem Cloud-Modell gegenprüfen</summary><p>Nur dieser markierte Ausschnitt und seine optimierte Variante werden gesendet. Das Ergebnis bleibt ein unbestätigter Vorschlag.</p><div class="cloud-controls"><label>Modell<select id="cloud-model"></select></label><label>Maximales Budget<select id="cloud-budget"><option value="0.10">0,10 $</option><option value="0.25" selected>0,25 $</option><option value="0.50">0,50 $</option><option value="1.00">1,00 $</option></select></label><button id="cloud-review">Einmalig prüfen</button></div><small id="cloud-model-help"></small><p class="privacy-copy">ZDR angefordert · Datensammlung abgelehnt · niemals automatisch für einen Stapel</p></details>
+            <details class="cloud-box"><summary>Mit einem Cloud-Modell gegenprüfen</summary><p>Nur dieser markierte Ausschnitt wird gesendet. Das Ergebnis bleibt ein unbestätigter Vorschlag.</p><div class="cloud-controls"><label>Modell<select id="cloud-model"></select></label><label>Maximales Budget<select id="cloud-budget"><option value="0.10">0,10 $</option><option value="0.25" selected>0,25 $</option><option value="0.50">0,50 $</option><option value="1.00">1,00 $</option></select></label><button id="cloud-review">Einmalig prüfen</button></div><small id="cloud-model-help"></small><p class="privacy-copy" id="cloud-privacy">Datenschutzprofil wird geladen …</p></details>
           </div>
         </div>
       </div>
@@ -114,7 +120,7 @@
         <div class="card preferences-card">
           <div class="panel-title"><h3>Verarbeitung</h3><span>lokal</span></div>
           <div class="settings-fields">
-            <label>Standardprofil<select id="setting-quality"><option value="beste_lokale_qualitaet">Beste lokale Qualität</option><option value="schnell">Schnell</option><option value="lizenzklar">Nur lizenzklare Modelle</option></select></label>
+            <label>Standardprofil<select id="setting-quality"><option value="beste_lokale_qualitaet">Beste lokale Qualität</option><option value="beste_qualitaet">Beste Qualität (lokal + Cloud)</option><option value="schnell">Schnell</option><option value="lizenzklar">Nur lizenzklare Modelle</option></select></label>
             <label>Standardschrift<select id="setting-script"><option value="auto">Automatisch erkennen</option><option value="handschrift">Handschrift / Kurrent</option><option value="druck">Druck / Fraktur</option><option value="schreibmaschine">Schreibmaschine</option></select></label>
             <label class="wide">Ausgabeordner<div class="inline-field"><input id="setting-output" placeholder="Standard: Dokumente/SchriftLotse" readonly title="Aus Sicherheitsgründen über Auswählen festlegen"><button id="pick-output" type="button">Auswählen</button></div></label>
             <label>Tesseract-Befehl<input id="setting-tesseract" value="tesseract"></label>
@@ -129,7 +135,7 @@
         </div>
         <div class="card cloud-settings">
           <div class="panel-title"><h3>OpenRouter-Zweitprüfung</h3><span>optional</span></div>
-          <p class="hint">Nur ein ausdrücklich ausgewählter Zeilenausschnitt wird gesendet. Stapel laufen niemals automatisch über die Cloud.</p>
+          <p class="hint">Einzelne Zeilen werden nur auf Wunsch gesendet. „Beste Qualität“ darf nach zusätzlicher Bestätigung bis zum gewählten Auftragslimit unsichere Ausschnitte senden.</p>
           <label>Standardmodell<select id="setting-cloud-model"></select></label>
           <div id="cloud-catalog" class="cloud-catalog" aria-live="polite"><div class="loading-state compact"><span class="spinner" aria-hidden="true"></span><span>Modellauswahl wird geladen …</span></div></div>
           <label>API-Schlüssel<input id="openrouter-key" type="password" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false"></label>
@@ -145,6 +151,7 @@
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <dialog id="confirm-dialog"><form method="dialog"><h3 id="confirm-title">Bitte bestätigen</h3><p id="confirm-copy"></p><div class="button-row"><button value="cancel">Abbrechen</button><button value="confirm" class="primary">Bestätigen</button></div></form></dialog>
-  <script src="/static/app.js?v=workspace-4"></script>
+  <dialog id="import-dialog" class="import-dialog"><form method="dialog"><div class="panel-title"><div><p class="eyebrow">Importvorschau</p><h3>Dokumente und Metadaten prüfen</h3></div><span id="import-dialog-count"></span></div><p class="hint">Jahr und Schrift gelten nur für das jeweilige Dokument. Leere Jahre werden später vorsichtig vorerkannt.</p><div class="import-table-wrap"><table><thead><tr><th>Dokument</th><th>Jahr</th><th>Schrift</th></tr></thead><tbody id="import-documents"></tbody></table></div><div class="button-row"><button value="cancel">Abbrechen</button><button value="confirm" class="primary">Übernehmen</button></div></form></dialog>
+  <script src="/static/app.js?v=workspace-5"></script>
 </body>
 </html>

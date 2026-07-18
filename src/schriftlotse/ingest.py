@@ -33,7 +33,9 @@ def _document_id(paths: Sequence[Path]) -> str:
     return digest.hexdigest()[:20]
 
 
-def discover_documents(sources: Sequence[Path]) -> list[SourceDocument]:
+def discover_documents(
+    sources: Sequence[Path], *, group_images_by_folder: bool = True
+) -> list[SourceDocument]:
     documents: list[SourceDocument] = []
     explicit_images: list[Path] = []
     seen: set[Path] = set()
@@ -79,33 +81,82 @@ def discover_documents(sources: Sequence[Path]) -> list[SourceDocument]:
                 if images:
                     for image in images:
                         seen.add(image.resolve())
-                    documents.append(
-                        SourceDocument(
-                            id=_document_id(images),
-                            title=directory.name,
-                            source_paths=images,
-                            kind="images",
-                            page_count=len(images),
+                    groups = [images] if group_images_by_folder else [[image] for image in images]
+                    for group in groups:
+                        documents.append(
+                            SourceDocument(
+                                id=_document_id(group),
+                                title=(directory.name if group_images_by_folder else group[0].stem),
+                                source_paths=group,
+                                kind="images",
+                                page_count=len(group),
+                            )
                         )
-                    )
         else:
             add_file(source)
 
     if explicit_images:
         explicit_images.sort(key=natural_key)
-        title = (
-            explicit_images[0].parent.name if len(explicit_images) > 1 else explicit_images[0].stem
+        groups = (
+            [explicit_images] if group_images_by_folder else [[image] for image in explicit_images]
         )
-        documents.append(
-            SourceDocument(
-                id=_document_id(explicit_images),
-                title=title,
-                source_paths=explicit_images,
-                kind="images",
-                page_count=len(explicit_images),
+        for group in groups:
+            title = group[0].parent.name if len(group) > 1 else group[0].stem
+            documents.append(
+                SourceDocument(
+                    id=_document_id(group),
+                    title=title,
+                    source_paths=group,
+                    kind="images",
+                    page_count=len(group),
+                )
             )
-        )
     return sorted(documents, key=lambda item: (item.title.casefold(), item.id))
+
+
+def import_preview(sources: Sequence[Path], *, group_images_by_folder: bool = False) -> dict:
+    documents = discover_documents(sources, group_images_by_folder=group_images_by_folder)
+    proposals: list[dict[str, object]] = []
+    for document in documents:
+        proposals.append(
+            {
+                "id": document.id,
+                "title": document.title,
+                "kind": document.kind,
+                "pages": document.page_count,
+                "files": [path.name for path in document.source_paths],
+            }
+        )
+    grouped = discover_documents(sources, group_images_by_folder=True)
+    suggestions: list[dict[str, object]] = []
+    for document in grouped:
+        sequences: dict[str, list[Path]] = {}
+        for path in document.source_paths:
+            match = re.match(
+                r"^(.*?)(?:[-_ ]?(?:seite|page|scan))?[-_ ]*(\d+)$",
+                path.stem.casefold(),
+            )
+            if match:
+                signature = match.group(1).rstrip("-_ ") or document.title.casefold()
+                sequences.setdefault(signature, []).append(path)
+        for paths in sequences.values():
+            if len(paths) < 2:
+                continue
+            ordered = sorted(paths, key=natural_key)
+            suggestions.append(
+                {
+                    "title": document.title,
+                    "pages": len(ordered),
+                    "files": [path.name for path in ordered],
+                }
+            )
+    return {
+        "documents": proposals,
+        "document_count": len(proposals),
+        "page_count": sum(document.page_count for document in documents),
+        "series_suggestions": suggestions,
+        "group_images_by_folder": group_images_by_folder,
+    }
 
 
 def pdf_page_count(path: Path) -> int:

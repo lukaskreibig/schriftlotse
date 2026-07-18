@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import queue
-import shutil
 import subprocess
 import threading
 import time
@@ -23,10 +22,11 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, Field
 
 from schriftlotse.cloud import OpenRouterReviewer, cloud_model_status
-from schriftlotse.config import AppPaths, Settings
+from schriftlotse.config import AppPaths, Settings, resolve_executable
 from schriftlotse.database import Database
 from schriftlotse.domain import (
     CloudPolicy,
+    DocumentMetadata,
     DocumentRequest,
     QualityProfile,
     Reading,
@@ -37,7 +37,7 @@ from schriftlotse.domain import (
     SearchQuery,
 )
 from schriftlotse.exports import export_document
-from schriftlotse.ingest import load_page
+from schriftlotse.ingest import import_preview, load_page
 from schriftlotse.model_registry import MODELS, ModelManager
 from schriftlotse.pipeline import ProcessingPipeline
 from schriftlotse.preprocessing import generate_variants
@@ -51,6 +51,9 @@ class JobPayload(BaseModel):
     quality: QualityProfile = QualityProfile.BEST_LOCAL
     cloud: bool = False
     cloud_budget_usd: float = Field(default=1.0, ge=0, le=100)
+    group_images_by_folder: bool = False
+    cloud_model_profile: str = "quality"
+    document_metadata: dict[str, DocumentMetadata] = Field(default_factory=dict)
 
 
 class SearchPayload(BaseModel):
@@ -60,6 +63,11 @@ class SearchPayload(BaseModel):
     year_from: int | None = None
     year_to: int | None = None
     limit: int = Field(default=50, ge=1, le=500)
+
+
+class ImportPreviewPayload(BaseModel):
+    sources: list[str]
+    group_images_by_folder: bool = False
 
 
 class CorrectionPayload(BaseModel):
@@ -72,7 +80,7 @@ class ModelInstallPayload(BaseModel):
 
 class CloudLinePayload(BaseModel):
     budget_usd: float = Field(default=0.5, gt=0, le=10)
-    profile: str = "fast"
+    profile: str = "quality"
 
 
 class SettingsPayload(BaseModel):
@@ -83,7 +91,7 @@ class SettingsPayload(BaseModel):
     tesseract_command: str = "tesseract"
     default_quality: str = "beste_lokale_qualitaet"
     default_script: str = "auto"
-    openrouter_profile: str = "fast"
+    openrouter_profile: str = "quality"
     show_preprocessing: bool = True
     output_token: str | None = None
 
@@ -227,6 +235,8 @@ class ApplicationState:
         return path
 
     def create_job(self, payload: JobPayload) -> JobRuntime:
+        if payload.cloud_model_profile not in {item["key"] for item in cloud_model_status()}:
+            raise ValueError("Unbekanntes OpenRouter-Modellprofil")
         with self.lock:
             sources = [self.authorized_sources.get(token) for token in payload.sources]
         if (
@@ -243,11 +253,12 @@ class ApplicationState:
             year=payload.year,
             script_hint=payload.script,
             quality_profile=payload.quality,
-            # Cloud review is intentionally never part of an unattended job.
-            # It is only available for a crop explicitly selected by the user.
-            cloud_policy=CloudPolicy.LOCAL_ONLY,
+            cloud_policy=CloudPolicy.ADAPTIVE if payload.cloud else CloudPolicy.LOCAL_ONLY,
             cloud_budget_usd=payload.cloud_budget_usd,
             advanced_models=payload.quality != QualityProfile.FAST,
+            group_images_by_folder=payload.group_images_by_folder,
+            cloud_model_profile=payload.cloud_model_profile,
+            document_metadata=payload.document_metadata,
         )
         runtime_id = uuid.uuid4().hex
         pipeline = ProcessingPipeline(self.paths, Settings.load(self.paths), self.database)
@@ -474,6 +485,22 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
             return {"source": None}
         return {"source": app_state.register_source(selected)}
 
+    @app.post("/api/import-preview")
+    def preview_import(payload: ImportPreviewPayload) -> dict[str, Any]:
+        with app_state.lock:
+            sources = [app_state.authorized_sources.get(token) for token in payload.sources]
+        if not sources or any(path is None for path in sources):
+            raise HTTPException(status_code=400, detail="Quellenauswahl ist nicht mehr gültig")
+        try:
+            return import_preview(
+                [path for path in sources if path is not None],
+                group_images_by_folder=payload.group_images_by_folder,
+            )
+        except (OSError, ValueError) as error:
+            raise HTTPException(
+                status_code=400, detail=f"Importvorschau fehlgeschlagen: {error}"
+            ) from error
+
     @app.post("/api/jobs", status_code=202)
     def create_job(payload: JobPayload) -> dict[str, Any]:
         try:
@@ -627,6 +654,12 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
             "confidence": row["confidence"],
             "review_status": row["review_status"],
             "readings": [dict(reading) for reading in app_state.database.line_readings(line_id)],
+            "engine_runs": [
+                dict(run)
+                for run in app_state.database.page_engine_runs(
+                    row["document_id"], int(row["page_index"])
+                )
+            ],
         }
 
     @app.get("/api/review-queue")
@@ -672,6 +705,11 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
         )
         variants = generate_variants(crop)
         optimized = variants[-1].image if variants else crop
+        started = time.monotonic()
+        try:
+            selected_option = reviewer.option(payload.profile)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
         try:
             review = reviewer.review(
                 crop,
@@ -682,6 +720,15 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
                 profile=payload.profile,
             )
         except (RuntimeError, ValueError, json.JSONDecodeError, httpx.HTTPError) as error:
+            app_state.database.record_cloud_usage(
+                line_id=line_id,
+                model=selected_option.model,
+                profile=payload.profile,
+                cost_usd=reviewer.spent_usd,
+                duration_seconds=time.monotonic() - started,
+                status="fehlgeschlagen",
+                message=str(error),
+            )
             raise HTTPException(status_code=400, detail=str(error)) from error
         reading = Reading(
             id=f"{line_id}:cloud:{uuid.uuid4().hex[:12]}",
@@ -691,6 +738,14 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
             confidence=review.confidence,
         )
         app_state.database.add_reading(line_id, reading)
+        app_state.database.record_cloud_usage(
+            line_id=line_id,
+            model=review.model,
+            profile=payload.profile,
+            cost_usd=review.cost,
+            duration_seconds=time.monotonic() - started,
+            status="erfolgreich",
+        )
         return {
             "text": review.text,
             "confidence": review.confidence,
@@ -715,7 +770,12 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
 
     @app.put("/api/settings")
     def update_settings(payload: SettingsPayload) -> dict[str, Any]:
-        if payload.default_quality not in {"schnell", "beste_lokale_qualitaet", "lizenzklar"}:
+        if payload.default_quality not in {
+            "schnell",
+            "beste_lokale_qualitaet",
+            "beste_qualitaet",
+            "lizenzklar",
+        }:
             raise HTTPException(status_code=400, detail="Unbekanntes Standardprofil")
         if payload.default_script not in {"auto", "handschrift", "druck", "schreibmaschine"}:
             raise HTTPException(status_code=400, detail="Unbekannte Standardschrift")
@@ -777,12 +837,19 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
             "lines": lines,
             "models_installed": sum(bool(model["installed"]) for model in models),
             "models_total": len(models),
-            "tesseract_available": shutil.which(settings.tesseract_command) is not None,
+            "tesseract_available": resolve_executable(settings.tesseract_command) is not None,
+            "tesseract_path": resolve_executable(settings.tesseract_command),
             "database": str(app_state.paths.database),
             "output": settings.output_dir or str(app_state.paths.output),
             "cache": str(app_state.paths.cache),
             "openrouter_configured": OpenRouterReviewer().available(),
+            "cloud_usage": app_state.database.cloud_usage_summary(),
+            "ground_truth": app_state.database.ground_truth_stats(),
         }
+
+    @app.get("/api/ground-truth")
+    def ground_truth_status() -> dict[str, int]:
+        return app_state.database.ground_truth_stats()
 
     @app.post("/api/models/{key}/install", status_code=202)
     def install_model(key: str, payload: ModelInstallPayload) -> dict[str, Any]:

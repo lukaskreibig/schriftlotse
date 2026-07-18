@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 
 from schriftlotse.app import ApplicationState, JobRuntime, UIController, create_app
 from schriftlotse.config import AppPaths
+from schriftlotse.domain import CloudPolicy, QualityProfile
+from schriftlotse.ingest import discover_documents
 
 
 def test_visible_progress_status_contains_locality_and_percentage() -> None:
@@ -120,3 +122,79 @@ def test_sources_and_downloads_use_opaque_capability_tokens(tmp_path) -> None:
     assert state.download(downloads[0]["id"]) == result.resolve()
     with pytest.raises(HTTPException):
         state.download(str(result))
+
+
+def test_import_preview_keeps_loose_scans_separate(monkeypatch, app_paths) -> None:
+    from PIL import Image
+
+    monkeypatch.setattr(AppPaths, "default", classmethod(lambda _cls: app_paths))
+    state = ApplicationState()
+    folder = app_paths.cache / "mixed"
+    folder.mkdir(parents=True)
+    for name in ("urkunde-seite1.jpg", "urkunde-seite2.jpg"):
+        Image.new("RGB", (20, 20), "white").save(folder / name)
+    source = state.register_source(folder)
+    client = TestClient(create_app(state))
+
+    separate = client.post(
+        "/api/import-preview",
+        json={"sources": [source["id"]], "group_images_by_folder": False},
+    )
+    grouped = client.post(
+        "/api/import-preview",
+        json={"sources": [source["id"]], "group_images_by_folder": True},
+    )
+
+    assert separate.status_code == 200
+    assert separate.json()["document_count"] == 2
+    assert grouped.json()["document_count"] == 1
+    assert separate.json()["series_suggestions"][0]["pages"] == 2
+
+
+def test_adaptive_job_preserves_consent_budget_and_document_metadata(
+    monkeypatch, app_paths
+) -> None:
+    from PIL import Image
+
+    captured = []
+
+    def fake_run(self, request, progress=None, job_id=None):
+        captured.append(request)
+        return job_id or "job", [], []
+
+    monkeypatch.setattr(AppPaths, "default", classmethod(lambda _cls: app_paths))
+    monkeypatch.setattr("schriftlotse.pipeline.ProcessingPipeline.run", fake_run)
+    state = ApplicationState()
+    scan = app_paths.cache / "scan.jpg"
+    Image.new("RGB", (20, 20), "white").save(scan)
+    source = state.register_source(scan)
+    document_id = discover_documents([scan], group_images_by_folder=False)[0].id
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/api/jobs",
+        json={
+            "sources": [source["id"]],
+            "quality": "beste_qualitaet",
+            "cloud": True,
+            "cloud_budget_usd": 0.5,
+            "cloud_model_profile": "quality",
+            "document_metadata": {
+                document_id: {
+                    "title": "Sterbeurkunde Hermann",
+                    "year": 1891,
+                    "script_hint": "handschrift",
+                }
+            },
+        },
+    )
+    for _ in range(50):
+        if captured:
+            break
+        time.sleep(0.01)
+
+    assert response.status_code == 202
+    assert captured[0].cloud_policy == CloudPolicy.ADAPTIVE
+    assert captured[0].quality_profile == QualityProfile.ADAPTIVE
+    assert captured[0].cloud_budget_usd == 0.5
+    assert captured[0].document_metadata[document_id].year == 1891

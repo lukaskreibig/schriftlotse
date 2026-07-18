@@ -22,6 +22,7 @@ class CloudPolicy(StrEnum):
 class QualityProfile(StrEnum):
     FAST = "schnell"
     BEST_LOCAL = "beste_lokale_qualitaet"
+    ADAPTIVE = "beste_qualitaet"
     LICENSE_CLEAR = "lizenzklar"
 
 
@@ -74,6 +75,12 @@ class JobStatus(StrEnum):
     CANCELLED = "abgebrochen"
 
 
+class DocumentMetadata(BaseModel):
+    title: str | None = Field(default=None, max_length=240)
+    year: int | None = Field(default=None, ge=800, le=2100)
+    script_hint: ScriptHint = ScriptHint.AUTO
+
+
 class DocumentRequest(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -84,6 +91,9 @@ class DocumentRequest(BaseModel):
     cloud_budget_usd: float = Field(default=1.0, ge=0, le=100)
     advanced_models: bool = True
     quality_profile: QualityProfile = QualityProfile.BEST_LOCAL
+    group_images_by_folder: bool = False
+    cloud_model_profile: str = "quality"
+    document_metadata: dict[str, DocumentMetadata] = Field(default_factory=dict)
 
 
 class PeriodEstimate(BaseModel):

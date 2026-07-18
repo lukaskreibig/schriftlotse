@@ -2,12 +2,41 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from platformdirs import PlatformDirs
+
+MACOS_EXECUTABLE_DIRS = (
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/local/bin",
+    "/usr/bin",
+    "/bin",
+)
+
+
+def resolve_executable(command: str) -> str | None:
+    """Resolve CLI tools reliably, including Finder-launched macOS apps."""
+    value = command.strip()
+    if not value:
+        return None
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute() or candidate.parent != Path("."):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.resolve())
+        return None
+    resolved = shutil.which(value)
+    if resolved:
+        return resolved
+    for directory in MACOS_EXECUTABLE_DIRS:
+        candidate = Path(directory) / value
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +77,7 @@ class Settings:
     tesseract_command: str = "tesseract"
     default_quality: str = "beste_lokale_qualitaet"
     default_script: str = "auto"
-    openrouter_profile: str = "fast"
+    openrouter_profile: str = "quality"
     show_preprocessing: bool = True
 
     @classmethod

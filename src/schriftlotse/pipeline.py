@@ -6,13 +6,17 @@ import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
+from schriftlotse.cloud import OpenRouterReviewer
 from schriftlotse.config import AppPaths, Settings
 from schriftlotse.database import Database
 from schriftlotse.domain import (
+    CloudPolicy,
     DocumentRequest,
     DocumentResult,
     JobStatus,
+    LayoutClass,
     PageResult,
     Reading,
     ReadingKind,
@@ -68,7 +72,9 @@ class ProcessingPipeline:
         self.database.update_job(job_id, JobStatus.RUNNING)
         if progress:
             progress("Scan wird analysiert · Dateien und Seiten werden erfasst", 0.001)
-        documents = discover_documents(request.sources)
+        documents = discover_documents(
+            request.sources, group_images_by_folder=request.group_images_by_folder
+        )
         if not documents:
             self.database.update_job(
                 job_id, JobStatus.FAILED, "Keine unterstützten Dateien gefunden"
@@ -85,7 +91,7 @@ class ProcessingPipeline:
         if (
             progress
             and request.advanced_models
-            and request.quality_profile.value == "beste_lokale_qualitaet"
+            and request.quality_profile.value in {"beste_lokale_qualitaet", "beste_qualitaet"}
             and not self.router.manager.is_installed("churro-mlx-8bit")
         ):
             progress(
@@ -93,12 +99,26 @@ class ProcessingPipeline:
                 0.02,
             )
         try:
+            cloud_reviewer = (
+                OpenRouterReviewer(request.cloud_budget_usd)
+                if request.cloud_policy == CloudPolicy.ADAPTIVE
+                else None
+            )
+            if cloud_reviewer is not None and not cloud_reviewer.available():
+                raise RuntimeError(
+                    "Adaptive Cloud-Prüfung gewählt, aber kein OpenRouter-Schlüssel gespeichert"
+                )
             for document in documents:
                 if self._cancel.is_set():
                     self.database.update_job(
                         job_id, JobStatus.CANCELLED, "Durch Benutzer abgebrochen"
                     )
                     return job_id, results, exports
+                metadata = request.document_metadata.get(document.id)
+                document_year = metadata.year if metadata and metadata.year else request.year
+                document_script = metadata.script_hint if metadata else request.script_hint
+                if metadata and metadata.title and metadata.title.strip():
+                    document.title = metadata.title.strip()
                 pages: list[PageResult] = []
                 logical_page_index = 0
                 for source_page_index, source_path, source_image in iter_document_pages(document):
@@ -178,7 +198,7 @@ class ProcessingPipeline:
                             limit=1 if request.quality_profile.value == "schnell" else 2,
                         )
                         routing_script, probe_text, probe_confidence = (
-                            self.router.preclassify_print(image, request.script_hint)
+                            self.router.preclassify_print(image, document_script)
                         )
                         if (
                             routing_script == ScriptHint.AUTO
@@ -193,7 +213,8 @@ class ProcessingPipeline:
                             routing_script = ScriptHint.PRINT
                         if (
                             request.advanced_models
-                            and request.quality_profile.value == "beste_lokale_qualitaet"
+                            and request.quality_profile.value
+                            in {"beste_lokale_qualitaet", "beste_qualitaet"}
                             and routing_script not in {ScriptHint.PRINT, ScriptHint.TYPEWRITER}
                             and self.router.manager.is_installed("churro-mlx-8bit")
                             and all(variant.metadata.name != "normalisiert" for variant in selected)
@@ -233,10 +254,10 @@ class ProcessingPipeline:
                             image,
                             filename=source_path.name,
                             quick_text=probe_text,
-                            year_hint=request.year,
+                            year_hint=document_year,
                             script_hint=routing_script,
                         )
-                        routing_year = request.year or preliminary_profile.period.exact_year
+                        routing_year = document_year or preliminary_profile.period.exact_year
                         if routing_year is None and probe_text:
                             # A single OCR year is useful for model routing, but is
                             # intentionally not persisted as trusted metadata.
@@ -261,7 +282,7 @@ class ProcessingPipeline:
                             image,
                             filename=source_path.name,
                             quick_text=f"{quick_text}\n{existing_pdf_text}",
-                            year_hint=request.year,
+                            year_hint=document_year,
                             script_hint=routing_script,
                             selected_model=candidate.model,
                         )
@@ -310,6 +331,29 @@ class ProcessingPipeline:
                                 x1, _, x2, y2 = line.bbox
                                 line.baseline = [(x1, y2 - 2), (x2, y2 - 2)]
                             del old_id
+                        if cloud_reviewer is not None and candidate.lines:
+                            cloud_profile = (
+                                "fast"
+                                if page_profile.layout in {LayoutClass.FORM, LayoutClass.TABLE}
+                                else request.cloud_model_profile
+                            )
+                            if progress:
+                                progress(
+                                    f"{page_label} · unsichere Stellen werden per Cloud "
+                                    "gegengeprüft",
+                                    min(0.94, page_start + 0.88 * page_share),
+                                )
+                            cloud_warning = self._review_uncertain_lines(
+                                cloud_reviewer,
+                                image,
+                                candidate.lines,
+                                routing_year,
+                                routing_script,
+                                cloud_profile,
+                                job_id,
+                            )
+                            if cloud_warning:
+                                warnings.append(cloud_warning)
                         mean_confidence = (
                             sum(line.confidence for line in candidate.lines) / len(candidate.lines)
                             if candidate.lines
@@ -347,6 +391,7 @@ class ProcessingPipeline:
                                     reading_order=0,
                                 )
                             ],
+                            engine_runs=candidate.engine_runs or [],
                         )
                         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
                         checkpoint_path.write_text(
@@ -373,13 +418,13 @@ class ProcessingPipeline:
                     for page in pages
                     if page.profile.period.exact_year is not None
                 ]
-                result_year = request.year
+                result_year = document_year
                 if result_year is None and detected_years:
                     result_year = max(set(detected_years), key=detected_years.count)
                 result = DocumentResult(
                     document=document,
                     year=result_year,
-                    script_hint=request.script_hint,
+                    script_hint=document_script,
                     pages=pages,
                 )
                 base_output = (
@@ -412,6 +457,79 @@ class ProcessingPipeline:
         except Exception as error:
             self.database.update_job(job_id, JobStatus.FAILED, str(error))
             raise
+
+    def _review_uncertain_lines(
+        self,
+        reviewer: OpenRouterReviewer,
+        image: Any,
+        lines: list[Any],
+        year: int | None,
+        script_hint: ScriptHint,
+        profile: str,
+        job_id: str,
+    ) -> str | None:
+        """Review a small, risk-ranked subset without replacing local readings."""
+        import time
+
+        uncertain = sorted(
+            (line for line in lines if line.review_status.value == "unsicher"),
+            key=lambda line: line.confidence,
+        )[:4]
+        for line in uncertain:
+            if reviewer.spent_usd >= reviewer.budget_usd:
+                return "Cloud-Kostenlimit erreicht; weitere Stellen bleiben lokal"
+            x1, y1, x2, y2 = line.bbox
+            padding = max(12, round((y2 - y1) * 0.45))
+            crop = image.crop(
+                (
+                    max(0, x1 - padding),
+                    max(0, y1 - padding),
+                    min(image.width, x2 + padding),
+                    min(image.height, y2 + padding),
+                )
+            )
+            started = time.monotonic()
+            option = reviewer.option(profile)
+            try:
+                review = reviewer.review(
+                    crop,
+                    crop,
+                    line.text,
+                    year,
+                    script_hint,
+                    profile=profile,
+                )
+            except Exception as error:
+                self.database.record_cloud_usage(
+                    job_id=job_id,
+                    line_id=None,
+                    model=option.model,
+                    profile=profile,
+                    cost_usd=reviewer.spent_usd,
+                    duration_seconds=time.monotonic() - started,
+                    status="fehlgeschlagen",
+                    message=str(error),
+                )
+                return f"Cloud-Zweitprüfung beendet: {error}"
+            line.readings.append(
+                Reading(
+                    id=f"{line.id}:cloud:{uuid.uuid4().hex[:12]}",
+                    kind=ReadingKind.CLOUD,
+                    text=review.text,
+                    model=review.model,
+                    confidence=review.confidence,
+                )
+            )
+            self.database.record_cloud_usage(
+                job_id=job_id,
+                line_id=None,
+                model=review.model,
+                profile=profile,
+                cost_usd=review.cost,
+                duration_seconds=time.monotonic() - started,
+                status="erfolgreich",
+            )
+        return None
 
     def _write_batch_index(self, job_id: str, results: list[DocumentResult]) -> Path:
         directory = self.paths.output / f"auftrag-{job_id[:8]}"

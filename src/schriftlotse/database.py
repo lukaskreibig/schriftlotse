@@ -17,7 +17,7 @@ from schriftlotse.domain import (
     ReviewStatus,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class Database:
@@ -190,6 +190,33 @@ class Database:
                     PRIMARY KEY(job_id, document_id, page_index),
                     FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS engine_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id TEXT NOT NULL,
+                    page_index INTEGER NOT NULL,
+                    engine TEXT NOT NULL,
+                    revision TEXT,
+                    backend TEXT NOT NULL,
+                    duration_seconds REAL NOT NULL DEFAULT 0,
+                    success INTEGER NOT NULL DEFAULT 1,
+                    message TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(document_id, page_index)
+                        REFERENCES pages(document_id, page_index) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS cloud_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT,
+                    line_id TEXT,
+                    model TEXT NOT NULL,
+                    profile TEXT NOT NULL,
+                    cost_usd REAL NOT NULL DEFAULT 0,
+                    duration_seconds REAL NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE SET NULL,
+                    FOREIGN KEY(line_id) REFERENCES lines(id) ON DELETE SET NULL
+                );
                 """
             )
             self._ensure_column(db, "pages", "logical_page_id", "TEXT")
@@ -204,9 +231,7 @@ class Database:
             self._ensure_column(db, "lines", "review_status", "TEXT NOT NULL DEFAULT 'automatisch'")
             self._ensure_column(db, "jobs", "request_json", "TEXT NOT NULL DEFAULT '{}'")
             self._migrate_readings(db)
-            version_row = db.execute(
-                "SELECT value FROM meta WHERE key='schema_version'"
-            ).fetchone()
+            version_row = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
             previous_version = int(version_row["value"]) if version_row else 0
             if previous_version < 4:
                 self._rebuild_search_indexes(db)
@@ -258,13 +283,10 @@ class Database:
         """Remove duplicate/stale FTS rows left by document reprocessing."""
         db.execute("DELETE FROM lines_fts")
         db.execute(
-            "INSERT INTO lines_fts(line_id,text,normalized) "
-            "SELECT id,text,normalized FROM lines"
+            "INSERT INTO lines_fts(line_id,text,normalized) SELECT id,text,normalized FROM lines"
         )
         db.execute("DELETE FROM lines_trigram")
-        db.execute(
-            "INSERT INTO lines_trigram(line_id,normalized) SELECT id,normalized FROM lines"
-        )
+        db.execute("INSERT INTO lines_trigram(line_id,normalized) SELECT id,normalized FROM lines")
         db.execute("DELETE FROM readings_fts")
         db.execute(
             "INSERT INTO readings_fts(reading_id,line_id,kind,text,normalized) "
@@ -361,6 +383,21 @@ class Database:
                             region.region_type,
                             json.dumps(region.polygon),
                             region.reading_order,
+                        ),
+                    )
+                for run in page.engine_runs:
+                    db.execute(
+                        "INSERT INTO engine_runs(document_id,page_index,engine,revision,backend,"
+                        "duration_seconds,success,message) VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            document.id,
+                            page.page_index,
+                            run.engine,
+                            run.revision,
+                            run.backend,
+                            run.duration_seconds,
+                            int(run.success),
+                            run.message,
                         ),
                     )
                 for order, line in enumerate(page.lines):
@@ -605,10 +642,61 @@ class Database:
 
     def line_readings(self, line_id: str) -> list[sqlite3.Row]:
         return self.rows(
-            "SELECT id,kind,text,model,confidence,selected,created_at FROM readings "
+            "SELECT id,kind,text,model,model_revision,confidence,selected,created_at "
+            "FROM readings "
             "WHERE line_id=? ORDER BY selected DESC, confidence DESC, created_at DESC",
             (line_id,),
         )
+
+    def page_engine_runs(self, document_id: str, page_index: int) -> list[sqlite3.Row]:
+        return self.rows(
+            "SELECT engine,revision,backend,duration_seconds,success,message "
+            "FROM engine_runs WHERE document_id=? AND page_index=? ORDER BY id",
+            (document_id, page_index),
+        )
+
+    def record_cloud_usage(
+        self,
+        *,
+        line_id: str | None,
+        model: str,
+        profile: str,
+        cost_usd: float,
+        duration_seconds: float,
+        status: str,
+        message: str = "",
+        job_id: str | None = None,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO cloud_usage(job_id,line_id,model,profile,cost_usd,"
+                "duration_seconds,status,message) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    job_id,
+                    line_id,
+                    model,
+                    profile,
+                    max(0.0, cost_usd),
+                    max(0.0, duration_seconds),
+                    status,
+                    message,
+                ),
+            )
+
+    def cloud_usage_summary(self) -> dict[str, Any]:
+        row = self.rows(
+            "SELECT COUNT(*) AS requests,COALESCE(SUM(cost_usd),0) AS cost_usd,"
+            "SUM(CASE WHEN status='erfolgreich' THEN 1 ELSE 0 END) AS successful "
+            "FROM cloud_usage"
+        )[0]
+        return dict(row)
+
+    def ground_truth_stats(self) -> dict[str, int]:
+        row = self.rows(
+            "SELECT COUNT(*) AS verified_lines,COUNT(DISTINCT document_id) AS documents "
+            "FROM lines WHERE manually_corrected=1"
+        )[0]
+        return {key: int(row[key] or 0) for key in row}
 
     def review_queue(self, limit: int = 100) -> list[sqlite3.Row]:
         return self.rows(

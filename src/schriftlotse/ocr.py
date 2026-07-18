@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
@@ -24,9 +25,10 @@ import pytesseract
 from PIL import Image
 from pytesseract import Output
 
-from schriftlotse.config import AppPaths, Settings
+from schriftlotse.config import AppPaths, Settings, resolve_executable
 from schriftlotse.domain import (
     AlternativeReading,
+    EngineRun,
     LineResult,
     QualityProfile,
     Reading,
@@ -34,7 +36,7 @@ from schriftlotse.domain import (
     ReviewStatus,
     ScriptHint,
 )
-from schriftlotse.model_registry import ModelManager
+from schriftlotse.model_registry import MODELS, ModelManager
 from schriftlotse.pagexml import parse_recognized, write_segmentation
 from schriftlotse.preprocessing import PreparedVariant, detect_text_lines
 
@@ -92,6 +94,7 @@ class RecognitionCandidate:
     score: float
     expected_cer: float
     coverage: float = 1.0
+    engine_runs: list[EngineRun] | None = None
 
 
 class OrliLineDetector:
@@ -196,44 +199,82 @@ class KrakenLineDetector:
             batch_size=1,
         )
         self._cache: dict[tuple[int, int, str], list[tuple[int, int, int, int]]] = {}
+        self._geometry_cache: dict[
+            tuple[int, int, str],
+            dict[tuple[int, int, int, int], tuple[list[tuple[int, int]], list[tuple[int, int]]]],
+        ] = {}
 
-    def __call__(self, image: Image.Image) -> list[tuple[int, int, int, int]]:
+    @staticmethod
+    def _key(image: Image.Image) -> tuple[int, int, str]:
         fingerprint = image.convert("L")
         fingerprint.thumbnail((256, 256))
-        key = (*image.size, hashlib.sha1(fingerprint.tobytes()).hexdigest())
+        return (*image.size, hashlib.sha1(fingerprint.tobytes()).hexdigest())
+
+    def __call__(self, image: Image.Image) -> list[tuple[int, int, int, int]]:
+        key = self._key(image)
         if key not in self._cache:
             captured = io.StringIO()
             try:
                 with redirect_stdout(captured), redirect_stderr(captured):
                     segmentation = self._task.predict(image, self._config)
-                boxes = OrliLineDetector._boxes(segmentation.lines, image.width, image.height)
+                boxes = []
+                geometry = {}
+                for line in segmentation.lines:
+                    line_boxes = OrliLineDetector._boxes([line], image.width, image.height)
+                    if not line_boxes:
+                        continue
+                    box = line_boxes[0]
+                    boxes.append(box)
+                    polygon = [
+                        (int(point[0]), int(point[1]))
+                        for point in (getattr(line, "boundary", None) or [])
+                    ]
+                    baseline = [
+                        (int(point[0]), int(point[1]))
+                        for point in (getattr(line, "baseline", None) or [])
+                    ]
+                    geometry[box] = (polygon, baseline)
+                self._geometry_cache[key] = geometry
             except Exception:
                 boxes = detect_text_lines(image)
+                self._geometry_cache[key] = {}
             minimum_width = max(20, image.width // 100)
-            self._cache[key] = sorted(
-                (box for box in boxes if box[2] - box[0] >= minimum_width and box[3] - box[1] >= 8),
-                key=lambda box: (box[1], box[0]),
-            )
+            # Kraken's segmentation order is the canonical reading order and
+            # may differ from a naive top-to-bottom sort on forms and columns.
+            self._cache[key] = [
+                box for box in boxes if box[2] - box[0] >= minimum_width and box[3] - box[1] >= 8
+            ]
         return list(self._cache[key])
+
+    def enrich(self, image: Image.Image, lines: list[LineResult]) -> None:
+        geometry = self._geometry_cache.get(self._key(image), {})
+        for line in lines:
+            polygon, baseline = geometry.get(line.bbox, ([], []))
+            if polygon:
+                line.polygon = polygon
+            if baseline:
+                line.baseline = baseline
 
 
 class TesseractRecognizer:
     def __init__(self, language: str, command: str = "tesseract") -> None:
         self.language = language
         self.name = f"tesseract:{language}"
-        pytesseract.pytesseract.tesseract_cmd = command
+        self.command = resolve_executable(command) or command
+        pytesseract.pytesseract.tesseract_cmd = self.command
         self._cache: dict[tuple[str, str], list[LineResult]] = {}
 
     @staticmethod
     def available(command: str = "tesseract") -> bool:
-        return shutil.which(command) is not None
+        return resolve_executable(command) is not None
 
     @staticmethod
     def installed_languages(command: str = "tesseract") -> set[str]:
-        if not TesseractRecognizer.available(command):
+        resolved = resolve_executable(command)
+        if resolved is None:
             return set()
         process = subprocess.run(
-            [command, "--list-langs"],
+            [resolved, "--list-langs"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -854,7 +895,7 @@ class RecognizerRouter:
                     except RuntimeError:
                         continue
             if (
-                self.quality_profile == QualityProfile.BEST_LOCAL
+                self.quality_profile in {QualityProfile.BEST_LOCAL, QualityProfile.ADAPTIVE}
                 and script_hint not in {ScriptHint.PRINT, ScriptHint.TYPEWRITER}
                 and self.manager.is_installed("churro-mlx-8bit")
             ):
@@ -887,6 +928,7 @@ class RecognizerRouter:
         script_hint: ScriptHint,
     ) -> RecognitionCandidate:
         candidates: list[RecognitionCandidate] = []
+        engine_runs: list[EngineRun] = []
         recognizers = self.recognizers(year, script_hint)
         for variant in variants:
             for recognizer in recognizers:
@@ -908,9 +950,38 @@ class RecognizerRouter:
                     if variant.metadata.name != required_variant:
                         continue
                 try:
+                    started = time.monotonic()
                     lines = recognizer.recognize(variant.image, variant.metadata.name)
-                except (RuntimeError, subprocess.SubprocessError):
+                except (RuntimeError, subprocess.SubprocessError) as error:
+                    engine_runs.append(
+                        EngineRun(
+                            engine=recognizer.name,
+                            revision=(
+                                MODELS[recognizer.name].revision
+                                if recognizer.name in MODELS
+                                else None
+                            ),
+                            backend=self._backend_name(recognizer),
+                            duration_seconds=time.monotonic() - started,
+                            success=False,
+                            message=str(error),
+                        )
+                    )
                     continue
+                engine_runs.append(
+                    EngineRun(
+                        engine=recognizer.name,
+                        revision=(
+                            MODELS[recognizer.name].revision if recognizer.name in MODELS else None
+                        ),
+                        backend=self._backend_name(recognizer),
+                        duration_seconds=time.monotonic() - started,
+                        success=bool(lines),
+                        message="" if lines else "Keine Textzeilen geliefert",
+                    )
+                )
+                if isinstance(self._line_detector, KrakenLineDetector):
+                    self._line_detector.enrich(variant.image, lines)
                 text = "\n".join(line.text for line in lines)
                 if not text.strip():
                     continue
@@ -958,9 +1029,11 @@ class RecognizerRouter:
                 )
         if not candidates:
             raise RuntimeError("Auf der Seite konnte kein Text erkannt werden")
+        for candidate in candidates:
+            candidate.engine_runs = engine_runs
         candidates.sort(key=lambda item: item.score, reverse=True)
         best = candidates[0]
-        if self.quality_profile == QualityProfile.BEST_LOCAL:
+        if self.quality_profile in {QualityProfile.BEST_LOCAL, QualityProfile.ADAPTIVE}:
             # Gold-standard routing: specialized line HTR is the primary reader
             # when the supplied/detected year matches its validated epoch.
             # CHURRO remains a valuable full-page second opinion and fallback.
@@ -1009,6 +1082,15 @@ class RecognizerRouter:
             if disagreement or line.confidence < 0.65:
                 line.review_status = ReviewStatus.UNCERTAIN
         return best
+
+    @staticmethod
+    def _backend_name(recognizer: Recognizer) -> str:
+        device = getattr(recognizer, "device", None)
+        if device:
+            return str(device)
+        if isinstance(recognizer, ChurroMLXRecognizer):
+            return "mlx-metal"
+        return "cpu"
 
     @staticmethod
     def _attach_spatial_alternatives(

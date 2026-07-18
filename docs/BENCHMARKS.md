@@ -125,6 +125,22 @@ optional `year`. `uv run schriftlotse benchmark cloud manifest.jsonl --budget 2`
 dieselben Ausschnitte mit den vier kuratierten, fest benannten Modellen. Ohne kontrollierte
 Referenz wird kein Sieger behauptet. Private Bilder und Ergebnisse bleiben außerhalb von Git.
 
+Ein zusätzlicher kontrollierter Acht-Zeilen-Lauf auf identischen Ausschnitten zeigte, warum
+die Cloud nicht pauschal die lokale Hauptlesung ersetzt:
+
+| Leser | CER | WER | mittlere Laufzeit | Kosten gesamt |
+|---|---:|---:|---:|---:|
+| lokales epochenpassendes TrOCR | 20,18 % | 41,18 % | 1,58 s/Zeile | 0 $ |
+| Claude Sonnet 5 | 33,26 % | 61,76 % | 2,26 s/Zeile | 0,00849 $ |
+| Gemini 3.5 Flash | 63,86 % | 101,47 % | 7,69 s/Zeile | 0,08365 $ |
+| GPT-5.6 Luna | 83,37 % | 97,06 % | 6,10 s/Zeile | 0,03352 $ |
+
+Das ist eine sehr kleine Stichprobe, kein allgemeines Modellranking. Auf fünf komplexen
+Ganzseiten ohne Solltext war Gemini qualitativ meist stärker bei Formularen und Sonnet meist
+stärker bei einzelnen Textzeilen; Luna war in diesem Bestand nicht konkurrenzfähig. Der
+adaptive Router verwendet deshalb Sonnet standardmäßig für unsichere Zeilen und Gemini für
+vorerkannte Formulare/Tabellen. Luna und Qwen bleiben sichtbar als experimentelle Optionen.
+
 Bei wiederkehrenden Händen werden einige hundert bestätigte Zeilen für Fine-Tuning
 voraussichtlich mehr bringen als ein weiteres allgemeines Großmodell. Die PAGE-XML-/
 eScriptorium-Ausgabe ist genau dafür vorhanden.
