@@ -82,7 +82,7 @@ class JobRuntime:
     message: str = "Auftrag wird vorbereitet"
     progress: float = 0.0
     started: float = field(default_factory=time.monotonic)
-    exports: list[str] = field(default_factory=list)
+    exports: list[dict[str, str]] = field(default_factory=list)
     error: str = ""
     history: list[str] = field(default_factory=list)
 
@@ -147,17 +147,52 @@ class ApplicationState:
         self.search = ArchiveSearch(self.database, self.models)
         self.jobs: dict[str, JobRuntime] = {}
         self.model_jobs: dict[str, ModelInstallRuntime] = {}
+        self.authorized_sources: dict[str, Path] = {}
+        self.downloads: dict[str, Path] = {}
         self.lock = threading.Lock()
         # Apple Silicon unified memory is shared by all local engines. One
         # heavy OCR/model task at a time prevents avoidable system pressure.
         self.processing_slot = threading.Semaphore(1)
 
+    def register_source(self, path: Path, display_name: str | None = None) -> dict[str, str]:
+        resolved = path.expanduser().resolve()
+        token = uuid.uuid4().hex
+        with self.lock:
+            self.authorized_sources[token] = resolved
+        return {"id": token, "name": display_name or resolved.name}
+
+    def register_downloads(self, paths: list[Path]) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        with self.lock:
+            for path in paths:
+                if not path.is_file():
+                    continue
+                token = uuid.uuid4().hex
+                self.downloads[token] = path.resolve()
+                entries.append({"id": token, "name": path.name})
+        return entries
+
+    def download(self, token: str) -> Path:
+        with self.lock:
+            path = self.downloads.get(token)
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="Ausgabedatei nicht gefunden")
+        return path
+
     def create_job(self, payload: JobPayload) -> JobRuntime:
-        sources = [Path(value).expanduser().resolve() for value in payload.sources]
-        if not sources or not all(path.exists() for path in sources):
-            raise ValueError("Mindestens eine vorhandene Datei oder ein Ordner ist erforderlich")
+        with self.lock:
+            sources = [self.authorized_sources.get(token) for token in payload.sources]
+        if (
+            not sources
+            or any(path is None for path in sources)
+            or not all(path.exists() for path in sources if path is not None)
+        ):
+            raise ValueError(
+                "Mindestens eine in SchriftLotse ausgewählte Datei oder ein Ordner ist erforderlich"
+            )
+        resolved_sources = [path for path in sources if path is not None]
         request = DocumentRequest(
-            sources=sources,
+            sources=resolved_sources,
             year=payload.year,
             script_hint=payload.script,
             quality_profile=payload.quality,
@@ -186,7 +221,7 @@ class ApplicationState:
                 runtime.status = "fertig"
                 runtime.progress = 1.0
                 runtime.message = "Verarbeitung abgeschlossen"
-                runtime.exports = [str(path) for path in exports if path.exists()]
+                runtime.exports = self.register_downloads(exports)
             except BaseException as error:
                 runtime.status = "fehlgeschlagen"
                 runtime.error = str(error) or error.__class__.__name__
@@ -224,7 +259,7 @@ class ApplicationState:
                 runtime.status = "fertig"
                 runtime.progress = 1.0
                 runtime.message = "Wiederhergestellter Auftrag abgeschlossen"
-                runtime.exports = [str(path) for path in exports if path.exists()]
+                runtime.exports = self.register_downloads(exports)
             except BaseException as error:
                 runtime.status = "fehlgeschlagen"
                 runtime.error = str(error) or error.__class__.__name__
@@ -291,16 +326,6 @@ def _web_directory() -> Path:
     return Path(__file__).with_name("web")
 
 
-def _validated_output(state: ApplicationState, raw_path: str) -> Path:
-    path = Path(raw_path).expanduser().resolve()
-    roots = [state.paths.output.resolve()]
-    if state.settings.output_dir:
-        roots.append(Path(state.settings.output_dir).expanduser().resolve())
-    if not path.is_file() or not any(path.is_relative_to(root) for root in roots):
-        raise HTTPException(status_code=404, detail="Ausgabedatei nicht gefunden")
-    return path
-
-
 def _export_current_document(state: ApplicationState, document_id: str) -> list[Path]:
     document = state.database.document(document_id)
     if document is None or not document["output_dir"]:
@@ -352,18 +377,21 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
     async def upload(files: list[UploadFile] = File(...)) -> dict[str, Any]:  # noqa: B008
         directory = app_state.paths.cache / "uploads" / uuid.uuid4().hex
         directory.mkdir(parents=True, exist_ok=True)
-        paths: list[str] = []
+        sources: list[dict[str, str]] = []
         for uploaded in files:
-            name = Path(uploaded.filename or "scan").name
-            destination = directory / name
+            name = Path(uploaded.filename or "Scan").name
+            suffix = Path(name).suffix.casefold()
+            supported = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".pdf", ".heic"}
+            safe_suffix = suffix if suffix in supported else ""
+            destination = directory / f"{uuid.uuid4().hex}{safe_suffix}"
             with destination.open("wb") as handle:
                 while chunk := await uploaded.read(1024 * 1024):
                     handle.write(chunk)
-            paths.append(str(destination))
-        return {"paths": paths}
+            sources.append(app_state.register_source(destination, name))
+        return {"sources": sources}
 
     @app.post("/api/folder")
-    def pick_folder() -> dict[str, str]:
+    def pick_folder() -> dict[str, Any]:
         process = subprocess.run(
             [
                 "osascript",
@@ -375,7 +403,12 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
             timeout=120,
             check=False,
         )
-        return {"path": process.stdout.strip() if process.returncode == 0 else ""}
+        if process.returncode != 0 or not process.stdout.strip():
+            return {"source": None}
+        selected = Path(process.stdout.strip()).expanduser().resolve()
+        if not selected.is_dir():
+            return {"source": None}
+        return {"source": app_state.register_source(selected)}
 
     @app.post("/api/jobs", status_code=202)
     def create_job(payload: JobPayload) -> dict[str, Any]:
@@ -444,7 +477,7 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
         directory.mkdir(parents=True, exist_ok=True)
         paths: list[Path] = []
         for index, uploaded in enumerate(files):
-            destination = directory / f"{index:04d}-{Path(uploaded.filename or 'page.xml').name}"
+            destination = directory / f"seite-{index:04d}.xml"
             destination.write_bytes(await uploaded.read())
             paths.append(destination)
         try:
@@ -469,7 +502,9 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
         }
         return {
             "status": "aktuelle Fassung exportiert",
-            "paths": [str(path) for path in paths if path.name in primary_names],
+            "downloads": app_state.register_downloads(
+                [path for path in paths if path.name in primary_names]
+            ),
         }
 
     @app.post("/api/search")
@@ -636,9 +671,9 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
         OpenRouterReviewer.save_api_key(key)
         return {"status": "im macOS-Schlüsselbund gespeichert"}
 
-    @app.get("/api/output")
-    def output(path: str) -> FileResponse:
-        return FileResponse(_validated_output(app_state, path))
+    @app.get("/api/output/{token}")
+    def output(token: str) -> FileResponse:
+        return FileResponse(app_state.download(token))
 
     return app
 

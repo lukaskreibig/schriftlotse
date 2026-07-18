@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import threading
 import time
 
-from schriftlotse.app import JobRuntime, UIController, create_app
+import pytest
+from fastapi import HTTPException
+
+from schriftlotse.app import ApplicationState, JobRuntime, UIController, create_app
 
 
 def test_visible_progress_status_contains_locality_and_percentage() -> None:
@@ -40,3 +44,25 @@ def test_local_health_probe() -> None:
         if getattr(route, "path", "") == "/api/health"
     )
     assert route.endpoint() == {"status": "bereit", "local": True, "version": "0.2.0"}
+
+
+def test_sources_and_downloads_use_opaque_capability_tokens(tmp_path) -> None:
+    state = ApplicationState.__new__(ApplicationState)
+    state.lock = threading.Lock()
+    state.authorized_sources = {}
+    state.downloads = {}
+    scan = tmp_path / "privater-scan.jpg"
+    scan.write_bytes(b"scan")
+    result = tmp_path / "schriftlotse.pdf"
+    result.write_bytes(b"pdf")
+
+    source = state.register_source(scan, "mein Scan.jpg")
+    downloads = state.register_downloads([result])
+
+    assert source["name"] == "mein Scan.jpg"
+    assert str(scan) not in source.values()
+    assert state.authorized_sources[source["id"]] == scan.resolve()
+    assert downloads[0]["name"] == "schriftlotse.pdf"
+    assert state.download(downloads[0]["id"]) == result.resolve()
+    with pytest.raises(HTTPException):
+        state.download(str(result))

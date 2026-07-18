@@ -31,8 +31,8 @@ function renderSources() {
     ? `${state.sources.length} ${state.sources.length === 1 ? 'Quelle' : 'Quellen'} ausgewählt`
     : 'Noch nichts ausgewählt';
   $('clear-sources').hidden = !state.sources.length;
-  $('sources').innerHTML = state.sources.map((path, index) =>
-    `<div class="source-item" title="${esc(path)}"><span>${esc(basename(path))}</span><button data-remove="${index}" aria-label="Entfernen">×</button></div>`
+  $('sources').innerHTML = state.sources.map((source, index) =>
+    `<div class="source-item" title="${esc(source.name)}"><span>${esc(source.name)}</span><button data-remove="${index}" aria-label="Entfernen">×</button></div>`
   ).join('');
   $('sources').querySelectorAll('[data-remove]').forEach(button => {
     button.onclick = () => {
@@ -72,7 +72,7 @@ async function upload(files) {
   const response = await fetch('/api/uploads', { method: 'POST', body });
   if (!response.ok) throw new Error(await response.text());
   const data = await response.json();
-  state.sources.push(...data.paths.filter(path => !state.sources.includes(path)));
+  state.sources.push(...data.sources.filter(source => !state.sources.some(item => item.id === source.id)));
   renderSources();
 }
 
@@ -91,8 +91,8 @@ dropzone.addEventListener('drop', event => upload(event.dataTransfer.files).catc
 $('folder').onclick = async () => {
   const response = await fetch('/api/folder', { method: 'POST' });
   const data = await response.json();
-  if (data.path && !state.sources.includes(data.path)) {
-    state.sources.push(data.path);
+  if (data.source && !state.sources.some(item => item.id === data.source.id)) {
+    state.sources.push(data.source);
     renderSources();
   }
 };
@@ -100,7 +100,7 @@ $('folder').onclick = async () => {
 $('start').onclick = async () => {
   if (!state.sources.length) return alert('Bitte zuerst Dateien oder einen Ordner auswählen.');
   const payload = {
-    sources: state.sources,
+    sources: state.sources.map(source => source.id),
     year: $('year').value ? Number($('year').value) : null,
     script: $('script').value,
     quality: document.querySelector('input[name="quality"]:checked').value,
@@ -150,12 +150,12 @@ function watchJob(id) {
 
 $('cancel').onclick = () => state.job && fetch(`/api/jobs/${state.job}/cancel`, { method: 'POST' });
 
-function renderExports(paths) {
+function renderExports(downloads) {
   const preferred = ['schriftlotse-ergebnis.zip', 'schriftlotse.pdf', 'schriftlotse.docx', 'transkription_original.txt', 'lesefassung.txt', 'result.json', 'stapelindex.json'];
-  const visible = paths.filter(path => preferred.includes(basename(path)));
+  const visible = downloads.filter(download => preferred.includes(download.name));
   if (!visible.length) { $('exports').innerHTML = ''; return; }
-  $('exports').innerHTML = '<h3>Fertig — weiterarbeiten</h3><div class="exports-grid">' + visible.map(path =>
-    `<a href="/api/output?path=${encodeURIComponent(path)}">${esc(basename(path))}</a>`
+  $('exports').innerHTML = '<h3>Fertig — weiterarbeiten</h3><div class="exports-grid">' + visible.map(download =>
+    `<a href="/api/output/${encodeURIComponent(download.id)}">${esc(download.name)}</a>`
   ).join('') + '<button id="to-search">Im Archiv prüfen →</button></div>';
   $('to-search').onclick = () => openTab('search');
 }
@@ -283,8 +283,8 @@ $('export-current').onclick = async () => {
   const data = await response.json();
   button.disabled = false;
   if (!response.ok) { $('correction-status').textContent = data.detail || 'Export fehlgeschlagen.'; return; }
-  $('correction-status').innerHTML = 'Aktuelle Fassung exportiert: ' + data.paths.map(path =>
-    `<a href="/api/output?path=${encodeURIComponent(path)}">${esc(basename(path))}</a>`
+  $('correction-status').innerHTML = 'Aktuelle Fassung exportiert: ' + data.downloads.map(download =>
+    `<a href="/api/output/${encodeURIComponent(download.id)}">${esc(download.name)}</a>`
   ).join(' · ');
 };
 
