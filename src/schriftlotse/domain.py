@@ -19,6 +19,46 @@ class CloudPolicy(StrEnum):
     ADAPTIVE = "adaptiv"
 
 
+class QualityProfile(StrEnum):
+    FAST = "schnell"
+    BEST_LOCAL = "beste_lokale_qualitaet"
+    LICENSE_CLEAR = "lizenzklar"
+
+
+class ScriptClass(StrEnum):
+    FRAKTUR = "fraktur"
+    ANTIQUA = "antiqua"
+    KURRENT = "kurrent"
+    SUETTERLIN = "suetterlin"
+    TYPEWRITER = "schreibmaschine"
+    MIXED = "gemischt"
+    UNKNOWN = "unbekannt"
+
+
+class LayoutClass(StrEnum):
+    PLAIN = "fliesstext"
+    FORM = "formular"
+    TABLE = "tabelle"
+    MAP = "karte_plan"
+    SPREAD = "doppelseite"
+    UNKNOWN = "unbekannt"
+
+
+class ReadingKind(StrEnum):
+    ENGINE = "modell"
+    CONSENSUS = "konsens"
+    NORMALIZED = "lesefassung"
+    VERIFIED = "bestaetigt"
+    CLOUD = "cloud"
+    PDF_TEXT = "pdf_text"
+
+
+class ReviewStatus(StrEnum):
+    AUTOMATIC = "automatisch"
+    UNCERTAIN = "unsicher"
+    VERIFIED = "bestaetigt"
+
+
 class SearchMode(StrEnum):
     SMART = "intelligent"
     EXACT = "exakt"
@@ -43,6 +83,25 @@ class DocumentRequest(BaseModel):
     cloud_policy: CloudPolicy = CloudPolicy.LOCAL_ONLY
     cloud_budget_usd: float = Field(default=1.0, ge=0, le=100)
     advanced_models: bool = True
+    quality_profile: QualityProfile = QualityProfile.BEST_LOCAL
+
+
+class PeriodEstimate(BaseModel):
+    year_from: int | None = None
+    year_to: int | None = None
+    exact_year: int | None = None
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class DocumentProfile(BaseModel):
+    script: ScriptClass = ScriptClass.UNKNOWN
+    layout: LayoutClass = LayoutClass.UNKNOWN
+    period: PeriodEstimate = Field(default_factory=PeriodEstimate)
+    language: str = "deu"
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    evidence: list[str] = Field(default_factory=list)
+    requires_review: bool = False
 
 
 class SourceDocument(BaseModel):
@@ -78,6 +137,32 @@ class AlternativeReading(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class Reading(BaseModel):
+    id: str
+    kind: ReadingKind
+    text: str
+    model: str
+    model_revision: str | None = None
+    confidence: float = Field(ge=0, le=1)
+    created_at: str | None = None
+
+
+class RegionResult(BaseModel):
+    id: str
+    region_type: str = "text"
+    polygon: list[tuple[int, int]]
+    reading_order: int
+
+
+class EngineRun(BaseModel):
+    engine: str
+    revision: str | None = None
+    backend: str
+    duration_seconds: float = 0.0
+    success: bool = True
+    message: str = ""
+
+
 class LineResult(BaseModel):
     id: str
     text: str
@@ -87,11 +172,18 @@ class LineResult(BaseModel):
     variant: str
     alternatives: list[AlternativeReading] = Field(default_factory=list)
     manually_corrected: bool = False
+    region_id: str | None = None
+    baseline: list[tuple[int, int]] = Field(default_factory=list)
+    polygon: list[tuple[int, int]] = Field(default_factory=list)
+    readings: list[Reading] = Field(default_factory=list)
+    review_status: ReviewStatus = ReviewStatus.AUTOMATIC
 
 
 class PageResult(BaseModel):
     page_index: int
     source_path: Path
+    source_page_index: int = 0
+    prepared_path: Path | None = None
     width: int
     height: int
     lines: list[LineResult]
@@ -100,6 +192,12 @@ class PageResult(BaseModel):
     selected_variant: str
     selected_model: str
     warnings: list[str] = Field(default_factory=list)
+    logical_page_id: str | None = None
+    source_bbox: tuple[int, int, int, int] | None = None
+    transform: list[list[float]] = Field(default_factory=list)
+    profile: DocumentProfile = Field(default_factory=DocumentProfile)
+    regions: list[RegionResult] = Field(default_factory=list)
+    engine_runs: list[EngineRun] = Field(default_factory=list)
 
 
 class DocumentResult(BaseModel):

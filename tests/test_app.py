@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import time
-from types import SimpleNamespace
 
-from schriftlotse.app import UIController
+from schriftlotse.app import JobRuntime, UIController, create_app
 
 
 def test_visible_progress_status_contains_locality_and_percentage() -> None:
@@ -15,40 +14,29 @@ def test_visible_progress_status_contains_locality_and_percentage() -> None:
     assert "OCR-/HTR-Modelle" in status
 
 
-def test_process_streams_visible_updates_before_files(monkeypatch, tmp_path) -> None:
-    export = tmp_path / "schriftlotse.pdf"
-    export.write_bytes(b"pdf")
+def test_runtime_snapshot_exposes_visible_local_progress() -> None:
+    runtime = JobRuntime("job", pipeline=object())  # type: ignore[arg-type]
+    runtime.emit("lokale OCR-/HTR-Modelle arbeiten", 0.42)
+    snapshot = runtime.snapshot()
+    assert snapshot["percent"] == 42
+    assert snapshot["local"] is True
+    assert "OCR-/HTR-Modelle" in snapshot["message"]
 
-    class FakePipeline:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
 
-        def run(self, request, progress):
-            progress("Scan wird analysiert", 0.1)
-            progress("lokale OCR-/HTR-Modelle arbeiten", 0.4)
-            result = SimpleNamespace(
-                document=SimpleNamespace(title="Testscan"),
-                pages=[SimpleNamespace(expected_cer=0.05)],
-                output_dir=tmp_path,
-            )
-            return "12345678job", [result], [export]
+def test_runtime_progress_never_moves_backwards_and_has_eta() -> None:
+    runtime = JobRuntime("test", pipeline=object())  # type: ignore[arg-type]
+    runtime.started -= 100
+    runtime.emit("erste Seite", 0.5)
+    runtime.emit("Doppelseite erkannt", 0.4)
+    snapshot = runtime.snapshot()
+    assert snapshot["percent"] == 50
+    assert 95 <= snapshot["estimated_remaining_seconds"] <= 105
 
-    monkeypatch.setattr("schriftlotse.app.ProcessingPipeline", FakePipeline)
-    controller = UIController.__new__(UIController)
-    controller.paths = None
-    controller.settings = None
-    controller.database = None
-    updates = list(
-        controller.process(
-            [str(tmp_path / "scan.png")],
-            "",
-            1872,
-            "Druck/Fraktur",
-            False,
-            False,
-            0,
-        )
+
+def test_local_health_probe() -> None:
+    route = next(
+        route
+        for route in create_app().routes
+        if getattr(route, "path", "") == "/api/health"
     )
-    assert any("OCR-/HTR-Modelle arbeiten" in status for status, _files in updates)
-    assert updates[-1][1] == [str(export)]
-    assert "Alle Verarbeitungsschritte liefen lokal" in updates[-1][0]
+    assert route.endpoint() == {"status": "bereit", "local": True, "version": "0.2.0"}

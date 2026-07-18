@@ -118,6 +118,28 @@ def pdf_page_count(path: Path) -> int:
         document.close()
 
 
+def pdf_text_layer(path: Path, page_index: int) -> str:
+    """Returns an existing PDF text layer as a candidate, never as trusted ground truth."""
+    import pypdfium2 as pdfium
+
+    document = pdfium.PdfDocument(str(path))
+    try:
+        if page_index < 0 or page_index >= len(document):
+            return ""
+        page = document[page_index]
+        text_page = page.get_textpage()
+        try:
+            character_count = text_page.count_chars()
+            return text_page.get_text_range(0, character_count).strip()
+        finally:
+            text_page.close()
+            page.close()
+    except Exception:
+        return ""
+    finally:
+        document.close()
+
+
 def tiff_page_count(path: Path) -> int:
     with Image.open(path) as image:
         return sum(1 for _ in ImageSequence.Iterator(image))

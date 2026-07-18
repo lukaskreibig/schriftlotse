@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "schriftlotse"
-version = "0.1.4"
+version = "0.2.0"
 description = "Lokale OCR/HTR- und Archivsuche für historische deutschsprachige Dokumente"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -19,8 +19,9 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-  "gradio>=6.20,<7",
+  "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
+  "jinja2>=3.1,<4",
   "keyring>=25.6,<26",
   "lxml>=5.4,<7",
   "numpy>=2.2,<3",
@@ -31,11 +32,13 @@ dependencies = [
   "pydantic>=2.11,<3",
   "pypdfium2>=4.30,<5",
   "pytesseract>=0.3.13,<1",
+  "python-multipart>=0.0.20,<1",
   "python-docx>=1.1,<2",
   "rapidfuzz>=3.13,<4",
   "reportlab>=4.4,<5",
   "scikit-image>=0.25,<1",
   "typer>=0.16,<1",
+  "uvicorn>=0.35,<1",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +51,9 @@ models = [
   "torch>=2.7,<3",
   "transformers>=5.0,<6",
   "usearch>=2.19,<3",
+]
+mlx = [
+  "mlx-vlm>=0.3,<1; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
 dev = [
   "mypy>=1.16,<2",
@@ -74,6 +80,9 @@ include = [
   "LICENSE",
   "THIRD_PARTY_MODELS.md",
   "SchriftLotse.command",
+  "docs",
+  "macos",
+  "scripts",
 ]
 
 [tool.ruff]

@@ -1,20 +1,40 @@
 from __future__ import annotations
 
 import math
+import re
+from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image
 from skimage.filters import threshold_sauvola
 
-from schriftlotse.domain import ImageDiagnostics, ImageVariant
+from schriftlotse.domain import (
+    DocumentProfile,
+    ImageDiagnostics,
+    ImageVariant,
+    LayoutClass,
+    PeriodEstimate,
+    ScriptClass,
+    ScriptHint,
+)
 
 
 @dataclass(slots=True)
 class PreparedVariant:
     metadata: ImageVariant
     image: Image.Image
+
+
+@dataclass(slots=True)
+class LogicalPageImage:
+    id: str
+    image: Image.Image
+    source_bbox: tuple[int, int, int, int]
+    transform: list[list[float]]
+    warnings: list[str]
 
 
 def _to_rgb_array(image: Image.Image) -> np.ndarray:
@@ -195,3 +215,271 @@ def detect_text_lines(image: Image.Image) -> list[tuple[int, int, int, int]]:
             )
         )
     return sorted(boxes, key=lambda box: (box[1], box[0]))
+
+
+def _orientation(image: Image.Image) -> int:
+    """Returns a conservative OCR orientation in clockwise degrees."""
+    if min(image.size) < 180:
+        return 0
+    with suppress(Exception):
+        import pytesseract
+
+        sample = image.copy()
+        sample.thumbnail((1400, 1400))
+        result = pytesseract.image_to_osd(sample, output_type=pytesseract.Output.DICT)
+        confidence = float(result.get("orientation_conf", 0.0))
+        rotation = int(result.get("rotate", 0)) % 360
+        if confidence >= 4.0 and rotation in {0, 90, 180, 270}:
+            return rotation
+    return 0
+
+
+def _content_bbox(image: Image.Image) -> tuple[int, int, int, int]:
+    """Finds a conservative photographed page rectangle without clipping marginalia."""
+    array = _to_rgb_array(image)
+    gray = _gray(array)
+    height, width = gray.shape
+    threshold = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    contours, _ = cv2.findContours(threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates: list[tuple[int, int, int, int]] = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if w * h >= width * height * 0.45 and w >= width * 0.55 and h >= height * 0.55:
+            candidates.append((x, y, x + w, y + h))
+    if not candidates:
+        return (0, 0, width, height)
+    x1, y1, x2, y2 = max(candidates, key=lambda box: (box[2] - box[0]) * (box[3] - box[1]))
+    padding = max(8, min(width, height) // 100)
+    return (
+        max(0, x1 - padding),
+        max(0, y1 - padding),
+        min(width, x2 + padding),
+        min(height, y2 + padding),
+    )
+
+
+def _spread_split(image: Image.Image) -> int | None:
+    width, height = image.size
+    aspect = width / max(height, 1)
+    # Wide newspaper snippets and tables also contain column gutters. A real
+    # photographed spread still has appreciable height relative to its width.
+    if aspect < 1.22 or height / max(width, 1) < 0.62:
+        return None
+    gray = _gray(_to_rgb_array(image))
+    scale = min(1.0, 1200 / max(width, height))
+    if scale < 1.0:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    ink = 255 - gray
+    column_ink = np.mean(ink, axis=0)
+    dark_fraction = np.mean(gray < 100, axis=0)
+    lo, hi = int(len(column_ink) * 0.44), int(len(column_ink) * 0.56)
+    if hi <= lo:
+        return None
+    seam = lo + int(np.argmax(dark_fraction[lo:hi]))
+    # Film photographs of open books usually show a continuous dark binding.
+    # A pale gutter remains a conservative fallback.
+    center = seam if float(dark_fraction[seam]) >= 0.28 else lo + int(np.argmin(column_ink[lo:hi]))
+    left_ink = float(np.mean(column_ink[int(len(column_ink) * 0.08) : center]))
+    right_ink = float(np.mean(column_ink[center : int(len(column_ink) * 0.92)]))
+    gutter = float(np.mean(column_ink[max(0, center - 3) : center + 4]))
+    dark_seam = float(dark_fraction[center]) >= 0.28
+    if min(left_ink, right_ink) < 4.0 or (
+        not dark_seam and gutter > min(left_ink, right_ink) * 0.82
+    ):
+        return None
+    return int(center / scale)
+
+
+def _logical_transform(
+    rotation: int,
+    original_size: tuple[int, int],
+    offset: tuple[int, int],
+) -> list[list[float]]:
+    """Maps logical-page coordinates back into the untouched source image."""
+    width, height = original_size
+    x, y = offset
+    match rotation % 360:
+        case 90:
+            return [[0.0, 1.0, float(y)], [-1.0, 0.0, float(height - 1 - x)], [0.0, 0.0, 1.0]]
+        case 180:
+            return [
+                [-1.0, 0.0, float(width - 1 - x)],
+                [0.0, -1.0, float(height - 1 - y)],
+                [0.0, 0.0, 1.0],
+            ]
+        case 270:
+            return [[0.0, -1.0, float(width - 1 - y)], [1.0, 0.0, float(x)], [0.0, 0.0, 1.0]]
+        case _:
+            return [[1.0, 0.0, float(x)], [0.0, 1.0, float(y)], [0.0, 0.0, 1.0]]
+
+
+def _transformed_bbox(
+    transform: list[list[float]], size: tuple[int, int], original_size: tuple[int, int]
+) -> tuple[int, int, int, int]:
+    width, height = size
+    points: list[tuple[float, float]] = []
+    for x, y in ((0, 0), (width, 0), (width, height), (0, height)):
+        points.append(
+            (
+                transform[0][0] * x + transform[0][1] * y + transform[0][2],
+                transform[1][0] * x + transform[1][1] * y + transform[1][2],
+            )
+        )
+    return (
+        max(0, round(min(point[0] for point in points))),
+        max(0, round(min(point[1] for point in points))),
+        min(original_size[0], round(max(point[0] for point in points))),
+        min(original_size[1], round(max(point[1] for point in points))),
+    )
+
+
+def split_logical_pages(image: Image.Image, source_id: str) -> list[LogicalPageImage]:
+    """Orients, conservatively crops, and optionally splits a photographed spread."""
+    rotation = _orientation(image)
+    oriented = image.rotate(-rotation, expand=True, fillcolor="white") if rotation else image
+    crop = _content_bbox(oriented)
+    page = oriented.crop(crop)
+    split = _spread_split(page)
+    warnings: list[str] = []
+    if rotation:
+        warnings.append(f"Seite automatisch um {rotation}° gedreht")
+    if crop != (0, 0, oriented.width, oriented.height):
+        warnings.append("Äußerer Aufnahme-/Filmrand wurde für die Analyse ausgeblendet")
+    if split is None:
+        transform = _logical_transform(rotation, image.size, (crop[0], crop[1]))
+        source_bbox = _transformed_bbox(transform, page.size, image.size)
+        return [LogicalPageImage(source_id, page, source_bbox, transform, warnings)]
+    gap = max(2, page.width // 500)
+    results: list[LogicalPageImage] = []
+    for suffix, local_bbox in (
+        ("links", (0, 0, max(1, split - gap), page.height)),
+        ("rechts", (min(page.width - 1, split + gap), 0, page.width, page.height)),
+    ):
+        x1, y1, x2, y2 = local_bbox
+        split_page = page.crop(local_bbox)
+        inner_crop = _content_bbox(split_page)
+        logical_page = split_page.crop(inner_crop)
+        inner_x1, inner_y1, inner_x2, inner_y2 = inner_crop
+        offset = (crop[0] + x1 + inner_x1, crop[1] + y1 + inner_y1)
+        transform = _logical_transform(rotation, image.size, offset)
+        source_bbox = _transformed_bbox(transform, logical_page.size, image.size)
+        page_warnings = [*warnings, "Doppelseite automatisch am Bundsteg getrennt"]
+        if inner_crop != (0, 0, x2 - x1, y2 - y1):
+            page_warnings.append("Film-/Aufnahmerand der Einzelseite ausgeblendet")
+        results.append(
+            LogicalPageImage(
+                id=f"{source_id}-{suffix}",
+                image=logical_page,
+                source_bbox=source_bbox,
+                transform=transform,
+                warnings=page_warnings,
+            )
+        )
+    return results
+
+
+YEAR_RE = re.compile(r"(?<!\d)(1[4-9]\d{2}|20\d{2})(?!\d)")
+COMPACT_DATE_RE = re.compile(
+    r"(?<!\d)((?:1[4-9]|20)\d{2})(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)"
+)
+
+
+def profile_page(
+    image: Image.Image,
+    *,
+    filename: str = "",
+    quick_text: str = "",
+    year_hint: int | None = None,
+    script_hint: ScriptHint = ScriptHint.AUTO,
+    selected_model: str = "",
+) -> DocumentProfile:
+    evidence: list[str] = []
+    filename_stem = Path(filename).stem
+    filename_candidates = [int(value) for value in YEAR_RE.findall(filename_stem)]
+    filename_candidates.extend(int(value) for value in COMPACT_DATE_RE.findall(filename_stem))
+    text_candidates = [int(value) for value in YEAR_RE.findall(quick_text)]
+    exact_year: int | None = None
+    confidence = 0.35
+    if filename_candidates:
+        exact_year = max(set(filename_candidates), key=filename_candidates.count)
+        confidence = 0.88
+        evidence.append(f"Jahresangabe {exact_year} im Dateinamen")
+    elif text_candidates:
+        candidate = max(set(text_candidates), key=text_candidates.count)
+        occurrences = text_candidates.count(candidate)
+        if occurrences >= 2:
+            exact_year = candidate
+            confidence = 0.74
+            evidence.append(f"mehrfach erkannter Jahreskandidat {candidate}")
+        else:
+            evidence.append(
+                f"einzelner unsicherer OCR-Jahreskandidat {candidate} (nicht übernommen)"
+            )
+    if year_hint is not None:
+        if exact_year is not None and exact_year != year_hint:
+            evidence.append(
+                f"manuelle Angabe {year_hint} widerspricht sichtbarem Jahr {exact_year}"
+            )
+        elif exact_year is None:
+            exact_year = year_hint
+            confidence = 1.0
+            evidence.append(f"manuelle Jahresangabe {year_hint}")
+    if exact_year is not None:
+        period = PeriodEstimate(
+            year_from=exact_year,
+            year_to=exact_year,
+            exact_year=exact_year,
+            confidence=confidence,
+            evidence=list(evidence),
+        )
+    else:
+        period = PeriodEstimate(
+            year_from=1800,
+            year_to=1945,
+            confidence=0.30,
+            evidence=["nur grobe Schätzung aus dem Modellprofil"],
+        )
+    if script_hint == ScriptHint.PRINT:
+        script = ScriptClass.FRAKTUR if "frak" in selected_model else ScriptClass.ANTIQUA
+    elif script_hint == ScriptHint.TYPEWRITER:
+        script = ScriptClass.TYPEWRITER
+    elif script_hint == ScriptHint.HANDWRITING or (
+        "trocr" in selected_model or "party" in selected_model
+    ):
+        script = ScriptClass.KURRENT
+    elif "frak" in selected_model or "latf" in selected_model:
+        script = ScriptClass.FRAKTUR
+    else:
+        script = ScriptClass.UNKNOWN
+    lowered = quick_text.casefold()
+    horizontal = cv2.HoughLinesP(
+        cv2.Canny(_gray(_to_rgb_array(image)), 50, 150),
+        1,
+        np.pi / 180,
+        threshold=max(50, image.width // 8),
+        minLineLength=max(80, image.width // 4),
+        maxLineGap=12,
+    )
+    line_count = 0 if horizontal is None else len(horizontal)
+    if any(word in lowered for word in ("standesbeam", "geboren", "register", "formular")):
+        layout = LayoutClass.FORM
+        evidence.append("typische Formularbegriffe erkannt")
+    elif line_count >= 6:
+        layout = LayoutClass.TABLE
+        evidence.append("mehrere Tabellenlinien erkannt")
+    elif image.width / max(image.height, 1) > 1.22:
+        layout = LayoutClass.SPREAD
+    else:
+        layout = LayoutClass.PLAIN
+    return DocumentProfile(
+        script=script,
+        layout=layout,
+        period=period,
+        confidence=max(period.confidence, 0.45 if script != ScriptClass.UNKNOWN else 0.25),
+        evidence=evidence,
+        requires_review=bool(
+            year_hint is not None
+            and period.exact_year is not None
+            and year_hint != period.exact_year
+        ),
+    )

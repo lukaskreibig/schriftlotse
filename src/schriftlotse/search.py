@@ -17,6 +17,41 @@ from schriftlotse.model_registry import MODELS, ModelManager
 WORD_RE = re.compile(r"[\wÄÖÜäöüßſ-]+", re.UNICODE)
 OCR_TRANSLATION = str.maketrans({"ſ": "s", "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ꝛ": "r"})
 
+# Embeddings help with open-ended language, while these small transparent
+# archival concept families reliably bridge the vocabulary most often used in
+# genealogical research and historical records. Every expansion remains visible
+# as a search reason; it never changes a transcription.
+ARCHIVAL_CONCEPTS: tuple[frozenset[str], ...] = (
+    frozenset(
+        {
+            "eheschliessung",
+            "heirat",
+            "trauung",
+            "vermaehlung",
+            "verehelicht",
+            "verheiratet",
+            "eheleute",
+            "ehefrau",
+            "ehemann",
+        }
+    ),
+    frozenset({"geburt", "geboren", "entbindung", "taufe", "getauft", "taeufling"}),
+    frozenset(
+        {
+            "tod",
+            "gestorben",
+            "verstorben",
+            "sterbefall",
+            "beerdigung",
+            "bestattung",
+            "begraben",
+        }
+    ),
+    frozenset({"wohnort", "wohnhaft", "wohnte", "ansaessig", "adresse", "domizil"}),
+    frozenset({"beruf", "profession", "gewerbe", "stand", "beschaeftigung", "taetig"}),
+    frozenset({"auswanderung", "ausgewandert", "emigration", "emigriert", "ausreise"}),
+)
+
 
 def normalize_text(text: str) -> str:
     value = unicodedata.normalize("NFC", text).translate(OCR_TRANSLATION).casefold()
@@ -80,12 +115,52 @@ def _fts_query(text: str, exact: bool) -> str:
     return " OR ".join(f'"{term}"*' for term in terms)
 
 
+def _archival_expansion(text: str) -> set[str]:
+    terms = set(normalize_text(text).split())
+    expanded: set[str] = set()
+    for family in ARCHIVAL_CONCEPTS:
+        if terms & family:
+            expanded.update(family)
+    return expanded - terms
+
+
+def _windowed_similarity(variants: set[str], candidate: str) -> float:
+    """Compares terms/windows without letting one-character OCR debris score 100%."""
+    candidate_words = WORD_RE.findall(candidate)
+    if not candidate_words:
+        return 0.0
+    best = 0.0
+    for variant in variants:
+        query_words = WORD_RE.findall(variant)
+        if not query_words:
+            continue
+        if len(query_words) == 1:
+            query_word = query_words[0]
+            minimum = max(2, len(query_word) // 2)
+            plausible = [word for word in candidate_words if len(word) >= minimum]
+            if plausible:
+                best = max(best, max(fuzz.ratio(query_word, word) for word in plausible))
+            continue
+        for window_size in range(
+            max(1, len(query_words) - 1),
+            min(len(candidate_words), len(query_words) + 1) + 1,
+        ):
+            for index in range(len(candidate_words) - window_size + 1):
+                window = " ".join(candidate_words[index : index + window_size])
+                best = max(best, fuzz.ratio(variant, window))
+    return best
+
+
 class SemanticSearch:
     def __init__(self, database: Database, manager: ModelManager) -> None:
         self.database = database
         self.manager = manager
         self.model: Any | None = None
-        self.revision = MODELS["qwen-embed"].revision or "unknown"
+        model_revision = MODELS["qwen-embed"].revision or "unknown"
+        # A historical OCR line is often just "seiner Ehefrau" or half of a
+        # hyphenated sentence. Embed the neighbouring lines as retrieval context
+        # while the hit still points to the precise centre line.
+        self.revision = f"{model_revision}:three-line-context-v1"
 
     @property
     def available(self) -> bool:
@@ -109,7 +184,22 @@ class SemanticSearch:
             return 0
         rows = self.database.rows(
             """
-            SELECT l.id, l.text FROM lines l
+            WITH contextual_lines AS (
+                SELECT
+                    id,
+                    text,
+                    trim(
+                        coalesce(lag(text) OVER page_lines, '') || char(10) ||
+                        text || char(10) ||
+                        coalesce(lead(text) OVER page_lines, '')
+                    ) AS context
+                FROM lines
+                WINDOW page_lines AS (
+                    PARTITION BY document_id, page_index ORDER BY line_order
+                )
+            )
+            SELECT l.id, l.context
+            FROM contextual_lines l
             LEFT JOIN embeddings e ON e.line_id=l.id AND e.model_revision=?
             WHERE e.line_id IS NULL AND length(l.text) > 2
             """,
@@ -118,7 +208,7 @@ class SemanticSearch:
         if not rows:
             return 0
         model = self._load()
-        texts = [row["text"] for row in rows]
+        texts = [row["context"] for row in rows]
         vectors = model.encode(
             texts,
             batch_size=batch_size,
@@ -149,11 +239,16 @@ class SemanticSearch:
             dtype=np.float32,
         )
         rows = self.database.rows(
-            "SELECT line_id, dimensions, vector FROM embeddings WHERE model_revision=?",
+            "SELECT e.line_id,e.dimensions,e.vector,l.normalized FROM embeddings e "
+            "JOIN lines l ON l.id=e.line_id WHERE e.model_revision=?",
             (self.revision,),
         )
         scores: list[tuple[str, float]] = []
         for row in rows:
+            # Tiny OCR fragments and table labels frequently produce deceptively
+            # strong embedding scores while carrying too little searchable meaning.
+            if len(str(row["normalized"]).replace(" ", "")) < 5:
+                continue
             candidate = np.frombuffer(row["vector"], dtype=np.float32, count=row["dimensions"])
             if candidate.size == vector.size:
                 scores.append((row["line_id"], float(candidate @ vector)))
@@ -181,24 +276,59 @@ class ArchiveSearch:
         return self.database.line_context(line_id)
 
     def _lexical(self, query: SearchQuery) -> list[tuple[str, float, str, str]]:
-        fts = _fts_query(query.text, query.mode == SearchMode.EXACT)
+        expansions = (
+            _archival_expansion(query.text)
+            if query.mode in {SearchMode.SMART, SearchMode.SEMANTIC}
+            else set()
+        )
+        fts_text = " ".join([query.text, *sorted(expansions)])
+        fts = _fts_query(fts_text, query.mode == SearchMode.EXACT)
         sql = """
             SELECT line_id, bm25(lines_fts, 0.0, 1.0, 0.5) AS rank
             FROM lines_fts WHERE lines_fts MATCH ? ORDER BY rank LIMIT ?
         """
+        limit = max(200, query.limit * 4)
         try:
-            rows = self.database.rows(sql, (fts, max(200, query.limit * 4)))
+            rows = self.database.rows(sql, (fts, limit))
+            reading_rows = self.database.rows(
+                "SELECT line_id, kind, text, bm25(readings_fts,0.0,0.0,0.0,1.0,0.5) "
+                "AS rank FROM readings_fts WHERE readings_fts MATCH ? "
+                "ORDER BY rank LIMIT ?",
+                (fts, limit),
+            )
         except Exception:
-            rows = []
-        return [
+            rows, reading_rows = [], []
+        results = [
             (
                 row["line_id"],
                 1.0 / (1.0 + abs(float(row["rank"]))),
-                ("exakter Texttreffer" if query.mode == SearchMode.EXACT else "Volltexttreffer"),
+                (
+                    "exakter Texttreffer"
+                    if query.mode == SearchMode.EXACT
+                    else "verwandter Archivbegriff"
+                    if expansions
+                    else "Volltexttreffer"
+                ),
                 query.text,
             )
             for row in rows
         ]
+        results.extend(
+            (
+                row["line_id"],
+                1.0 / (1.0 + abs(float(row["rank"]))) * 0.92,
+                (
+                    "alternative Modell-Lesung"
+                    if row["kind"] not in {"bestaetigt", "konsens"}
+                    else "verwandter Archivbegriff"
+                    if expansions
+                    else "Volltexttreffer"
+                ),
+                row["text"],
+            )
+            for row in reading_rows
+        )
+        return results
 
     def _fuzzy(self, query: SearchQuery) -> list[tuple[str, float, str, str]]:
         normalized = normalize_text(query.text)
@@ -217,35 +347,58 @@ class ArchiveSearch:
         for row in aliases:
             variants.update((row["canonical"], row["alias"]))
         rows = self.database.rows(
-            "SELECT id, text, normalized, alternatives FROM lines "
-            "ORDER BY confidence DESC LIMIT 20000"
+            "SELECT l.id, l.text, l.normalized, l.alternatives, "
+            "group_concat(r.text, char(30)) AS readings "
+            "FROM lines l LEFT JOIN readings r ON r.line_id=l.id "
+            "GROUP BY l.id ORDER BY l.confidence DESC LIMIT 20000"
         )
         results: list[tuple[str, float, str, str]] = []
         threshold = max(45.0, query.fuzziness * 100)
         for row in rows:
-            candidate_texts = [(row["normalized"], "ähnliche Schreibweise")]
+            candidate_texts = [
+                (row["normalized"], "ähnliche Schreibweise", row["text"])
+            ]
             for alternative in json.loads(row["alternatives"] or "[]"):
+                alternative_text = str(alternative.get("text", ""))
                 candidate_texts.append(
-                    (normalize_text(alternative.get("text", "")), "alternative OCR-Lesung")
+                    (
+                        normalize_text(alternative_text),
+                        "alternative OCR-Lesung",
+                        alternative_text,
+                    )
                 )
+            for reading in (row["readings"] or "").split(chr(30)):
+                if reading:
+                    candidate_texts.append(
+                        (normalize_text(reading), "alternative Modell-Lesung", reading)
+                    )
             best_score = 0.0
             best_reason = "ähnliche Schreibweise"
             best_form = row["text"]
-            for candidate, reason in candidate_texts:
-                score = max(fuzz.partial_ratio(variant, candidate) for variant in variants)
+            for candidate, reason, display_form in candidate_texts:
+                score = _windowed_similarity(variants, candidate)
                 if query.mode == SearchMode.NAME and query_phonetics:
-                    words = WORD_RE.findall(candidate)
+                    query_words = WORD_RE.findall(normalized)
+                    words = [
+                        word
+                        for word in WORD_RE.findall(candidate)
+                        if any(
+                            len(word) >= max(2, len(query_word) // 2)
+                            and abs(len(word) - len(query_word)) <= max(3, len(query_word) // 2)
+                            for query_word in query_words
+                        )
+                    ]
                     candidate_phonetics = {koelner_phonetik(word) for word in words}
                     matched_codes = sum(
                         bool(code) and code in candidate_phonetics for code in query_phonetics
                     )
-                    if matched_codes == len(query_phonetics):
+                    if matched_codes == len(query_phonetics) and score >= 55.0:
                         score = max(score, 86.0)
                         reason = "phonetische Namensvariante"
-                    elif matched_codes and len(query_phonetics) > 1:
+                    elif matched_codes and len(query_phonetics) > 1 and score >= 50.0:
                         score = max(score, 68.0 + 12.0 * matched_codes / len(query_phonetics))
                 if score > best_score:
-                    best_score, best_reason, best_form = score, reason, candidate
+                    best_score, best_reason, best_form = score, reason, display_form
             if best_score >= threshold:
                 results.append((row["id"], best_score / 100.0, best_reason, best_form))
         return sorted(results, key=lambda item: item[1], reverse=True)[: max(200, query.limit * 4)]

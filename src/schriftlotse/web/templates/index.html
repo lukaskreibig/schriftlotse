@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>SchriftLotse</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">SL</span><div><h1>SchriftLotse</h1><p>Alte Schriften. Klar gelesen.</p></div></div>
+    <div class="local-badge"><span></span> Läuft nur auf diesem Mac</div>
+  </header>
+  <nav class="tabs" aria-label="Hauptnavigation">
+    <button data-tab="read" class="active"><span>1</span> Entziffern</button>
+    <button data-tab="search"><span>2</span> Prüfen & suchen</button>
+    <button data-tab="models"><span>3</span> Modelle & Datenschutz</button>
+  </nav>
+
+  <main>
+    <section id="read" class="tab active">
+      <div class="section-heading"><div><p class="eyebrow">Neuer Auftrag</p><h2>Dokumente entziffern</h2></div><p>Scans auswählen, Profil festlegen, lokal verarbeiten. Originale bleiben unverändert.</p></div>
+      <div id="recovery" class="notice warning" hidden></div>
+      <div class="setup-grid">
+        <div class="card drop" id="dropzone">
+          <div class="drop-icon" aria-hidden="true">⇩</div>
+          <h3>Scans, PDFs oder einen ganzen Ordner</h3>
+          <p>Hier ablegen oder vom Mac auswählen. JPG, PNG, TIFF und PDF werden unterstützt.</p>
+          <div class="button-row"><label class="button primary file-button">Dateien auswählen<input id="files" type="file" multiple accept="image/*,.pdf,.tif,.tiff"></label><button id="folder">Ordner auswählen</button></div>
+          <div class="source-head"><strong id="source-count">Noch nichts ausgewählt</strong><button id="clear-sources" class="text-button" hidden>Liste leeren</button></div>
+          <div id="sources" class="source-list"></div>
+        </div>
+
+        <div class="card settings-card">
+          <h3>Wie soll SchriftLotse arbeiten?</h3>
+          <fieldset class="profile-fieldset">
+            <legend>Verarbeitungsprofil</legend>
+            <label class="profile-option">
+              <input type="radio" name="quality" value="schnell">
+              <span><strong>Schnell</strong><small>Tesseract, Bildkorrektur und Suche. Ideal zum Vorsortieren.</small></span>
+            </label>
+            <label class="profile-option selected">
+              <input type="radio" name="quality" value="beste_lokale_qualitaet" checked>
+              <span><strong>Beste lokale Qualität <em>Empfohlen</em></strong><small>CHURRO plus passendes TrOCR/Kraken und Vergleich aller Lesungen.</small></span>
+            </label>
+            <label class="profile-option">
+              <input type="radio" name="quality" value="lizenzklar">
+              <span><strong>Nur lizenzklare Modelle</strong><small>Ohne CHURRO-Forschungsgewichte; gut für frei weitergebbare Abläufe.</small></span>
+            </label>
+          </fieldset>
+          <div class="two-fields">
+            <label>Jahr <small>optional</small><input id="year" type="number" min="800" max="2100" placeholder="z. B. 1872"></label>
+            <label>Schriftart<select id="script"><option value="auto">Automatisch erkennen</option><option value="handschrift">Handschrift/Kurrent</option><option value="druck">Druck/Fraktur</option><option value="schreibmaschine">Schreibmaschine</option></select></label>
+          </div>
+          <p class="hint">Ohne Angabe prüft die App Dateiname, sichtbare Jahreszahlen und eine Druck-Vorerkennung. Bei bekanntem Jahr ist die manuelle Angabe am zuverlässigsten.</p>
+          <button id="start" class="primary large">Entzifferung starten <span>→</span></button>
+        </div>
+      </div>
+
+      <div class="status card" id="status">
+        <div class="status-top"><div><p class="eyebrow">Lokale Verarbeitung</p><strong id="status-message">Bereit für Dokumente</strong></div><span id="status-meta">0 %</span></div>
+        <progress id="progress" max="100" value="0"></progress>
+        <div class="status-foot"><span>🔒 Keine Scans werden hochgeladen</span><button id="cancel" class="danger-text" hidden>Auftrag abbrechen</button></div>
+        <details><summary>Technisches Verarbeitungsprotokoll</summary><pre id="job-log"></pre></details>
+        <div id="exports"></div>
+      </div>
+    </section>
+
+    <section id="search" class="tab">
+      <div class="section-heading"><div><p class="eyebrow">Lokales Archiv</p><h2>Prüfen, korrigieren und wiederfinden</h2></div><p>Alle automatischen Lesungen bleiben suchbar. Bestätigte Korrekturen werden zur sichtbaren Fassung.</p></div>
+      <div class="search-panel card">
+        <div class="search-main"><input id="query" placeholder="Name, Ort, Begriff oder Beschreibung …" autocomplete="off"><select id="search-mode"><option value="intelligent">Intelligent</option><option value="namen">Namenssuche</option><option value="exakt">Exakt</option><option value="bedeutung">Bedeutungsähnlich</option></select><button id="search-button" class="primary">Suchen</button></div>
+        <div class="search-options"><label>von Jahr <input id="year-from" type="number" min="800" max="2100"></label><label>bis Jahr <input id="year-to" type="number" min="800" max="2100"></label><label class="range">Ähnlichkeit <input id="fuzziness" type="range" min="45" max="95" value="72"><output id="fuzziness-value">72 %</output></label><button id="review-queue">Unsichere Stellen prüfen</button></div>
+      </div>
+      <div id="archive-summary" class="archive-summary"></div>
+      <div class="review-grid">
+        <div class="card results-card"><div class="panel-title"><h3 id="results-title">Treffer</h3><span id="result-count">0</span></div><div class="table-scroll"><table><thead><tr><th>Dokument</th><th>Seite</th><th>Lesung</th><th>Warum</th></tr></thead><tbody id="results"></tbody></table></div><div id="empty-results" class="empty-state">Suche nach einem Namen oder öffne die unsicheren Stellen.</div></div>
+        <div class="card viewer">
+          <div id="viewer-empty" class="empty-state viewer-empty"><span>⌖</span><h3>Fundstelle auswählen</h3><p>Der Scan springt danach direkt zur erkannten Zeile.</p></div>
+          <div id="viewer-content" hidden>
+            <div class="canvas-wrap"><img id="scan" alt="Fundstelle im Originalscan"><canvas id="overlay"></canvas></div>
+            <div class="viewer-heading"><div><p class="eyebrow">Ausgewählte Fundstelle</p><h3 id="hit-title">Fundstelle</h3></div><span id="hit-confidence"></span></div>
+            <label>Transkription<textarea id="correction" rows="5"></textarea></label>
+            <div id="readings" class="readings"></div>
+            <div class="button-row"><button id="save-correction" class="primary">Korrektur bestätigen</button><button id="export-current">Aktuelle Fassung exportieren</button><span id="correction-status" class="status-copy"></span></div>
+            <details class="cloud-box"><summary>Mit einem Cloud-Modell gegenprüfen</summary><p>Nur dieser markierte Ausschnitt und seine optimierte Variante werden gesendet. Das Ergebnis bleibt ein unbestätigter Vorschlag.</p><div class="cloud-controls"><label>Modell<select id="cloud-model"></select></label><label>Maximales Budget<select id="cloud-budget"><option value="0.10">0,10 $</option><option value="0.25" selected>0,25 $</option><option value="0.50">0,50 $</option><option value="1.00">1,00 $</option></select></label><button id="cloud-review">Einmalig prüfen</button></div><small id="cloud-model-help"></small><p class="privacy-copy">ZDR angefordert · Datensammlung abgelehnt · niemals automatisch für einen Stapel</p></details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="models" class="tab">
+      <div class="section-heading"><div><p class="eyebrow">Einrichtung</p><h2>Modelle & Datenschutz</h2></div><p>Gewichte liegen im Benutzer-Cache, Ergebnisse im Dokumente-Ordner — beides bleibt außerhalb von GitHub.</p></div>
+      <div class="model-grid">
+        <div class="card"><div class="panel-title"><h3>Lokale Modelle</h3><span>Apple Silicon</span></div><p class="hint">Die besten Modelle werden nur einmal geladen und anschließend seitenweise wiederverwendet.</p><div id="model-install-status" class="notice" hidden></div><div id="model-list"></div></div>
+        <div class="card"><h3>Optionale OpenRouter-Zweitprüfung</h3><p>Cloud-Zugriff ist vollständig optional. Er erscheint nur an einer von dir gewählten Fundstelle.</p><label>API-Schlüssel<input id="openrouter-key" type="password" placeholder="sk-or-v1-…" autocomplete="off"></label><div class="button-row"><button id="save-openrouter-key">Sicher im macOS-Schlüsselbund speichern</button><span id="key-status"></span></div><div id="cloud-catalog" class="cloud-catalog"></div><p class="hint">Es gibt keinen belastbaren öffentlichen Vergleich speziell für deutsche Kurrent auf deinem Bestand. Die Empfehlungen sind sinnvolle Startpunkte; bei kritischen Namen immer Original und mehrere Lesungen vergleichen.</p></div>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

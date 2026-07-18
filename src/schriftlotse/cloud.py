@@ -4,7 +4,7 @@ import base64
 import io
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import httpx
@@ -13,13 +13,66 @@ from PIL import Image
 
 from schriftlotse.domain import ScriptHint
 
-MODEL_BY_TASK = {
-    "print": "google/gemini-3.5-flash",
-    "handwriting": "anthropic/claude-opus-4.8",
-    "premium": "openai/gpt-5.5",
-    "economy": "qwen/qwen3-vl-235b-a22b-instruct",
-    "free": "google/gemma-4-31b-it:free",
+
+@dataclass(frozen=True, slots=True)
+class CloudModelOption:
+    key: str
+    model: str
+    label: str
+    description: str
+    price_hint: str
+    recommended: bool = False
+    provider_sort: str = "latency"
+
+
+# Verified against OpenRouter's live model catalog on 2026-07-18.  These are
+# deliberately explicit rather than floating aliases, so a saved reading stays
+# reproducible.  No vendor has a public benchmark for this exact Kurrent corpus;
+# the labels therefore describe the intended operating point, not a guarantee.
+CLOUD_MODEL_OPTIONS: dict[str, CloudModelOption] = {
+    "fast": CloudModelOption(
+        key="fast",
+        model="google/gemini-3.5-flash",
+        label="Schnell & stark (empfohlen)",
+        description="Sehr schnelles aktuelles Visionmodell für die tägliche Zweitprüfung.",
+        price_hint="$1,50 Eingabe / $9 Ausgabe je 1 Mio. Token",
+        recommended=True,
+    ),
+    "ocr_value": CloudModelOption(
+        key="ocr_value",
+        model="qwen/qwen3-vl-235b-a22b-instruct",
+        label="OCR-Preis/Leistung",
+        description="Großes offenes Visionmodell mit Dokument- und Tabellenfokus.",
+        price_hint="ab $0,21 Eingabe / $1,90 Ausgabe je 1 Mio. Token",
+    ),
+    "quality": CloudModelOption(
+        key="quality",
+        model="anthropic/claude-opus-4.8",
+        label="Maximale Zweitprüfung",
+        description="Langsameres Spitzenmodell für besonders schwierige Einzelstellen.",
+        price_hint="$5 Eingabe / $25 Ausgabe je 1 Mio. Token",
+        provider_sort="throughput",
+    ),
+    "gpt": CloudModelOption(
+        key="gpt",
+        model="openai/gpt-5.5",
+        label="GPT-Spitzenmodell",
+        description="Alternative hochwertige Lesung zum direkten Modellvergleich.",
+        price_hint="$5 Eingabe / $30 Ausgabe je 1 Mio. Token",
+        provider_sort="throughput",
+    ),
+    "free": CloudModelOption(
+        key="free",
+        model="openrouter/free",
+        label="Kostenloser Router (wechselnd)",
+        description="Wählt ein verfügbares Gratis-Visionmodell; Qualität ist nicht reproduzierbar.",
+        price_hint="kostenlos, Verfügbarkeit schwankt",
+    ),
 }
+
+
+def cloud_model_status() -> list[dict[str, Any]]:
+    return [asdict(option) for option in CLOUD_MODEL_OPTIONS.values()]
 
 
 @dataclass(slots=True)
@@ -48,10 +101,16 @@ class OpenRouterReviewer:
     def available(self) -> bool:
         return bool(self.api_key)
 
+    @staticmethod
+    def option(profile: str) -> CloudModelOption:
+        try:
+            return CLOUD_MODEL_OPTIONS[profile]
+        except KeyError as error:
+            raise ValueError("Unbekanntes OpenRouter-Modellprofil") from error
+
     def choose_model(self, script_hint: ScriptHint) -> str:
-        if script_hint in {ScriptHint.HANDWRITING, ScriptHint.AUTO}:
-            return MODEL_BY_TASK["handwriting"]
-        return MODEL_BY_TASK["print"]
+        del script_hint
+        return CLOUD_MODEL_OPTIONS["fast"].model
 
     @staticmethod
     def _data_url(image: Image.Image) -> str:
@@ -68,12 +127,14 @@ class OpenRouterReviewer:
         year: int | None,
         script_hint: ScriptHint,
         model: str | None = None,
+        profile: str = "fast",
     ) -> CloudReview:
         if not self.api_key:
             raise RuntimeError("Kein OpenRouter-Schlüssel im macOS-Schlüsselbund")
         if self.spent_usd >= self.budget_usd:
             raise RuntimeError("Cloud-Kostenlimit erreicht")
-        selected = model or self.choose_model(script_hint)
+        option = self.option(profile)
+        selected = model or option.model
         prompt = (
             "Transkribiere den deutschsprachigen historischen Text originalgetreu. "
             "Bewahre historische Rechtschreibung, Großschreibung und Zeichensetzung. "
@@ -95,8 +156,14 @@ class OpenRouterReviewer:
                 }
             ],
             "temperature": 0,
+            "max_tokens": 1200,
             "response_format": {"type": "json_object"},
-            "provider": {"zdr": True, "data_collection": "deny", "require_parameters": True},
+            "provider": {
+                "zdr": True,
+                "data_collection": "deny",
+                "require_parameters": True,
+                "sort": option.provider_sort,
+            },
             "usage": {"include": True},
         }
         response = httpx.post(

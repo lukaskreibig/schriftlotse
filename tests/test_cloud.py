@@ -4,7 +4,7 @@ import json
 
 from PIL import Image
 
-from schriftlotse.cloud import OpenRouterReviewer
+from schriftlotse.cloud import CLOUD_MODEL_OPTIONS, OpenRouterReviewer
 from schriftlotse.domain import ScriptHint
 
 
@@ -43,4 +43,13 @@ def test_openrouter_uses_privacy_flags(monkeypatch) -> None:
         "zdr": True,
         "data_collection": "deny",
         "require_parameters": True,
+        "sort": "latency",
     }
+    assert captured["model"] == "google/gemini-3.5-flash"
+    assert captured["max_tokens"] == 1200
+
+
+def test_cloud_profiles_have_unique_current_model_ids() -> None:
+    model_ids = [option.model for option in CLOUD_MODEL_OPTIONS.values()]
+    assert len(model_ids) == len(set(model_ids))
+    assert CLOUD_MODEL_OPTIONS["quality"].provider_sort == "throughput"

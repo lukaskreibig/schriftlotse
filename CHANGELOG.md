@@ -1,5 +1,39 @@
 # Änderungsprotokoll
 
+## 0.2.0 – 2026-07-18
+
+- lokale FastAPI-Oberfläche mit dauerhaftem Status und Verarbeitungsprotokoll
+- automatische Orientierung, konservativer Seitenrand und robuste Buchfalztrennung
+- getrennte Buchseiten werden nochmals einzeln vom Film-/Aufnahmerand befreit
+- Kraken/UB und CHURRO-MLX-8-Bit in den lokalen Modellrouter integriert
+- CHURRO nutzt als Standard-Ganzseitenleser die im Dokumenttest zuverlässigere
+  Beleuchtungsnormalisierung und übernimmt nur Dokumentzeilen aus der XML-Ausgabe
+- Party bleibt im lizenzklaren Profil verfügbar, bremst aber nicht mehr das CHURRO-Profil
+- achtstellige Datumsangaben in Dateinamen (z. B. `19230726`) steuern das Epochenmodell
+- CLI-Stapel können mit `--resume-job` aus Seiten-Checkpoints fortgesetzt werden
+- CHURRO-Sprungkoordinaten verwenden schnelle Bildboxen statt einer zweiten Kraken-BLLA-Runde
+- Profile für schnell, beste lokale Qualität und lizenzklar
+- konservative Jahreserkennung ohne stille Jahres- oder Formularumschreibungen
+- getrennte Modell-Lesungen, bestätigte Fassungen, Regionen, Grundlinien und Polygone
+- Suche über alternative OCR-/HTR-Lesungen und manuelle Fassungen
+- semantische Suche mit Drei-Zeilen-Kontext und transparenten deutschen Archivbegriffen
+- einmalige FTS-Neuindizierung auf Schema v4; keine veralteten Treffer nach Wiederholungsläufen
+- PAGE XML, ALTO, eScriptorium-Paket und PAGE-XML-Rückimport
+- pixelgenaue logische Seitenbilder nach einer Doppelseitentrennung
+- seitenweise Zwischenstände und Fortsetzen unterbrochener Aufträge
+- OpenRouter ausschließlich für ausgewählte Zeilenausschnitte
+- sichtbare Modellinstallation mit Lizenz-, Prüfsummen- und Speicherprüfung
+- konservative Druck-Vorerkennung; unnötige Handschriftmodelle werden auf sicheren
+  Druckseiten nicht mehr gestartet (Testseite: 44,3 s auf 6,7 s)
+- monotone Fortschrittsanzeige mit grober Restzeit auch nach Doppelseitentrennung
+- priorisierte Prüfliste unsicherer Zeilen und sichtbare alternative Modell-Lesungen
+- fünf auswählbare OpenRouter-Profile mit Live-Katalog-geprüften Modell-IDs,
+  Kostenbestätigung und ZDR-Weiterleitung
+- nativer, lokal signierter AppKit/WebKit-Rahmen über `scripts/build_macos_app.sh`
+- CLI-Profilwahl über `--profile`
+- Qwen3 Embedding 0.6B gehört nun zu den empfohlenen Kernmodellen, damit die
+  Bedeutungsähnlichkeit nach der Ersteinrichtung tatsächlich lokal verfügbar ist
+
 ## 0.1.4 – 2026-07-17
 
 - fehlenden TrOCR-Tokenizer erkannt und mit vollständig gepinntem Offline-Prozessor repariert

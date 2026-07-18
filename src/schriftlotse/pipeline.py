@@ -7,28 +7,26 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-import httpx
-from PIL import Image
-
-from schriftlotse.cloud import OpenRouterReviewer
 from schriftlotse.config import AppPaths, Settings
 from schriftlotse.database import Database
 from schriftlotse.domain import (
-    AlternativeReading,
-    CloudPolicy,
     DocumentRequest,
     DocumentResult,
     JobStatus,
-    LineResult,
     PageResult,
+    Reading,
+    ReadingKind,
+    RegionResult,
+    ScriptHint,
 )
 from schriftlotse.exports import export_document
-from schriftlotse.ingest import discover_documents, iter_document_pages
+from schriftlotse.ingest import discover_documents, iter_document_pages, pdf_text_layer
 from schriftlotse.ocr import RecognizerRouter
 from schriftlotse.preprocessing import (
-    PreparedVariant,
     generate_variants,
+    profile_page,
     select_preflight_variants,
+    split_logical_pages,
 )
 
 ProgressCallback = Callable[[str, float], None]
@@ -60,28 +58,40 @@ class ProcessingPipeline:
         self,
         request: DocumentRequest,
         progress: ProgressCallback | None = None,
+        job_id: str | None = None,
     ) -> tuple[str, list[DocumentResult], list[Path]]:
-        job_id = uuid.uuid4().hex
-        self.database.create_job(job_id)
+        job_id = job_id or uuid.uuid4().hex
+        self.database.create_job(
+            job_id,
+            json.dumps(request.model_dump(mode="json"), ensure_ascii=False),
+        )
         self.database.update_job(job_id, JobStatus.RUNNING)
         if progress:
-            progress("Dateien und Seiten werden erfasst", 0.01)
+            progress("Scan wird analysiert · Dateien und Seiten werden erfasst", 0.001)
         documents = discover_documents(request.sources)
         if not documents:
             self.database.update_job(
                 job_id, JobStatus.FAILED, "Keine unterstützten Dateien gefunden"
             )
             raise ValueError("Keine unterstützten Dateien gefunden")
+        # Starts as the number of physical source pages and grows if a spread is
+        # split.  This keeps the denominator truthful for checkpoints and ETA.
         total_pages = sum(document.page_count for document in documents)
         completed = 0
         results: list[DocumentResult] = []
         exports: list[Path] = []
-        reviewer = (
-            OpenRouterReviewer(request.cloud_budget_usd)
-            if request.cloud_policy == CloudPolicy.ADAPTIVE
-            else None
-        )
         self.settings.advanced_models = request.advanced_models
+        self.router.quality_profile = request.quality_profile
+        if (
+            progress
+            and request.advanced_models
+            and request.quality_profile.value == "beste_lokale_qualitaet"
+            and not self.router.manager.is_installed("churro-mlx-8bit")
+        ):
+            progress(
+                "Beste verfügbare lokale Modelle aktiv; CHURRO ist noch nicht installiert",
+                0.02,
+            )
         try:
             for document in documents:
                 if self._cancel.is_set():
@@ -90,79 +100,229 @@ class ProcessingPipeline:
                     )
                     return job_id, results, exports
                 pages: list[PageResult] = []
-                for page_index, source_path, image in iter_document_pages(document):
+                logical_page_index = 0
+                for source_page_index, source_path, source_image in iter_document_pages(document):
                     if self._cancel.is_set():
                         break
-                    page_share = 1.0 / max(total_pages, 1)
-                    page_start = completed / max(total_pages, 1)
-                    page_label = f"{document.title}: Seite {page_index + 1}/{document.page_count}"
-                    if progress:
-                        progress(
-                            f"{page_label} · Scan wird analysiert", page_start + 0.05 * page_share
-                        )
-                    variants = generate_variants(image)
-                    selected = select_preflight_variants(variants, limit=2)
-                    if progress:
-                        progress(
-                            f"{page_label} · Helligkeit, Kontrast und Schieflage angepasst",
-                            page_start + 0.22 * page_share,
-                        )
-                        progress(
-                            f"{page_label} · lokale OCR-/HTR-Modelle arbeiten",
-                            page_start + 0.30 * page_share,
-                        )
-                    candidate = self.router.recognize_variants(
-                        selected, request.year, request.script_hint
+                    logical_pages = split_logical_pages(
+                        source_image, f"{document.id}-{source_page_index:04d}"
                     )
-                    if progress:
-                        progress(
-                            f"{page_label} · erkannt mit {candidate.model}",
-                            page_start + 0.82 * page_share,
+                    total_pages += max(0, len(logical_pages) - 1)
+                    for logical in logical_pages:
+                        page_index = logical_page_index
+                        logical_page_index += 1
+                        image = logical.image
+                        checkpoint_path = (
+                            self.paths.cache
+                            / "checkpoints"
+                            / job_id
+                            / document.id
+                            / f"{page_index:04d}.json"
                         )
-                    warnings: list[str] = []
-                    if any("+standesformular" in line.model for line in candidate.lines):
-                        warnings.append(
-                            "Gedruckte Standesamtsformulierungen wurden regelgestützt ergänzt; "
-                            "Original-Lesarten stehen in den Alternativen"
+                        if checkpoint_path.is_file():
+                            try:
+                                restored = PageResult.model_validate_json(
+                                    checkpoint_path.read_text(encoding="utf-8")
+                                )
+                                if (
+                                    restored.logical_page_id == logical.id
+                                    and restored.source_path == source_path
+                                ):
+                                    pages.append(restored)
+                                    completed += 1
+                                    if progress:
+                                        progress(
+                                            f"{document.title}: Seite {page_index + 1} "
+                                            "aus sicherem Zwischenstand geladen",
+                                            min(0.95, completed / max(total_pages, 1)),
+                                        )
+                                    continue
+                            except (ValueError, OSError):
+                                pass
+                        prepared_path = (
+                            self.paths.cache
+                            / "logical-pages"
+                            / job_id
+                            / document.id
+                            / f"{page_index:04d}.png"
                         )
-                    if candidate.coverage < 0.35:
-                        warnings.append(
-                            "Ergebnis wahrscheinlich unvollständig – zu wenig Textfläche erkannt"
+                        prepared_path.parent.mkdir(parents=True, exist_ok=True)
+                        image.save(prepared_path, format="PNG")
+                        page_share = 1.0 / max(total_pages, 1)
+                        page_start = min(0.94, completed / max(total_pages, 1))
+                        suffix = (
+                            f" · {logical.id.rsplit('-', 1)[-1]}" if len(logical_pages) > 1 else ""
                         )
-                    if candidate.expected_cer > 0.10:
-                        warnings.append(
-                            "Niedrige Erkennungssicherheit – manuelle Prüfung empfohlen"
+                        page_label = (
+                            f"{document.title}: Seite {source_page_index + 1}/"
+                            f"{document.page_count}{suffix}"
                         )
-                    if (
-                        reviewer is not None
-                        and reviewer.available()
-                        and candidate.expected_cer > 0.10
-                        and candidate.lines
-                    ):
+                        self.database.update_job_page(
+                            job_id,
+                            document.id,
+                            page_index,
+                            logical.id,
+                            "voranalyse",
+                            "läuft",
+                            page_label,
+                        )
                         if progress:
                             progress(
-                                f"{page_label} · optionale Zweitlesung wird geprüft",
-                                page_start + 0.86 * page_share,
+                                f"{page_label} · Orientierung, Seitenrand und Bundsteg "
+                                "werden geprüft",
+                                min(0.94, page_start + 0.05 * page_share),
                             )
-                        self._cloud_review(
-                            reviewer,
-                            image,
-                            selected,
-                            candidate.lines,
-                            request,
-                            warnings,
+                        variants = generate_variants(image)
+                        selected = select_preflight_variants(
+                            variants,
+                            limit=1 if request.quality_profile.value == "schnell" else 2,
                         )
-                    for order, line in enumerate(candidate.lines):
-                        line.id = f"{document.id}-{page_index:04d}-{order:04d}"
-                    mean_confidence = (
-                        sum(line.confidence for line in candidate.lines) / len(candidate.lines)
-                        if candidate.lines
-                        else 0.0
-                    )
-                    pages.append(
-                        PageResult(
+                        routing_script, probe_text, probe_confidence = (
+                            self.router.preclassify_print(image, request.script_hint)
+                        )
+                        if (
+                            routing_script == ScriptHint.AUTO
+                            and len(probe_text) >= 200
+                            and probe_confidence >= 0.45
+                            and re.search(
+                                r"zeitung|tageblatt|anzeige|bekanntmachung|druck",
+                                source_path.stem,
+                                flags=re.IGNORECASE,
+                            )
+                        ):
+                            routing_script = ScriptHint.PRINT
+                        if (
+                            request.advanced_models
+                            and request.quality_profile.value == "beste_lokale_qualitaet"
+                            and routing_script not in {ScriptHint.PRINT, ScriptHint.TYPEWRITER}
+                            and self.router.manager.is_installed("churro-mlx-8bit")
+                            and all(variant.metadata.name != "normalisiert" for variant in selected)
+                        ):
+                            selected.append(
+                                next(
+                                    variant
+                                    for variant in variants
+                                    if variant.metadata.name == "normalisiert"
+                                )
+                            )
+                        if progress:
+                            progress(
+                                f"{page_label} · Beleuchtung und Kontrast angepasst",
+                                min(0.94, page_start + 0.22 * page_share),
+                            )
+                            if routing_script == ScriptHint.PRINT:
+                                progress(
+                                    f"{page_label} · Druckschrift sicher vorerkannt "
+                                    f"({probe_confidence:.0%})",
+                                    min(0.94, page_start + 0.27 * page_share),
+                                )
+                            progress(
+                                f"{page_label} · lokale OCR-/HTR-Modelle arbeiten",
+                                min(0.94, page_start + 0.30 * page_share),
+                            )
+                        self.database.update_job_page(
+                            job_id,
+                            document.id,
+                            page_index,
+                            logical.id,
+                            "ocr",
+                            "läuft",
+                            "Lokale Modelle arbeiten",
+                        )
+                        preliminary_profile = profile_page(
+                            image,
+                            filename=source_path.name,
+                            quick_text=probe_text,
+                            year_hint=request.year,
+                            script_hint=routing_script,
+                        )
+                        routing_year = request.year or preliminary_profile.period.exact_year
+                        if routing_year is None and probe_text:
+                            # A single OCR year is useful for model routing, but is
+                            # intentionally not persisted as trusted metadata.
+                            candidates = [
+                                int(value)
+                                for value in re.findall(
+                                    r"(?<!\d)(1[5-9]\d{2}|20\d{2})(?!\d)", probe_text
+                                )
+                            ]
+                            if candidates:
+                                routing_year = max(set(candidates), key=candidates.count)
+                        candidate = self.router.recognize_variants(
+                            selected, routing_year, routing_script
+                        )
+                        quick_text = "\n".join(line.text for line in candidate.lines)
+                        existing_pdf_text = (
+                            pdf_text_layer(source_path, source_page_index)
+                            if document.kind == "pdf"
+                            else ""
+                        )
+                        page_profile = profile_page(
+                            image,
+                            filename=source_path.name,
+                            quick_text=f"{quick_text}\n{existing_pdf_text}",
+                            year_hint=request.year,
+                            script_hint=routing_script,
+                            selected_model=candidate.model,
+                        )
+                        if progress:
+                            progress(
+                                f"{page_label} · erkannt mit {candidate.model}",
+                                min(0.94, page_start + 0.82 * page_share),
+                            )
+                        warnings: list[str] = list(logical.warnings)
+                        if candidate.coverage < 0.35:
+                            warnings.append(
+                                "Ergebnis wahrscheinlich unvollständig – "
+                                "zu wenig Textfläche erkannt"
+                            )
+                        if candidate.expected_cer > 0.10:
+                            warnings.append(
+                                "Niedrige Erkennungssicherheit – manuelle Prüfung empfohlen"
+                            )
+                        if page_profile.requires_review:
+                            warnings.append(
+                                "Jahresangabe und sichtbarer Jahreskandidat widersprechen sich"
+                            )
+                        if existing_pdf_text and candidate.lines:
+                            candidate.lines[0].readings.append(
+                                Reading(
+                                    id=f"{logical.id}:pdf-text",
+                                    kind=ReadingKind.PDF_TEXT,
+                                    text=existing_pdf_text,
+                                    model="eingebettete PDF-Textschicht",
+                                    confidence=0.35,
+                                )
+                            )
+                            warnings.append(
+                                "Vorhandene PDF-Textschicht wurde nur als unbestätigte "
+                                "Alternative übernommen"
+                            )
+                        for order, line in enumerate(candidate.lines):
+                            old_id = line.id
+                            line.id = f"{document.id}-{page_index:04d}-{order:04d}"
+                            for reading_index, reading in enumerate(line.readings):
+                                reading.id = f"{line.id}:{reading.kind.value}:{reading_index}"
+                            if not line.polygon:
+                                x1, y1, x2, y2 = line.bbox
+                                line.polygon = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+                            if not line.baseline:
+                                x1, _, x2, y2 = line.bbox
+                                line.baseline = [(x1, y2 - 2), (x2, y2 - 2)]
+                            del old_id
+                        mean_confidence = (
+                            sum(line.confidence for line in candidate.lines) / len(candidate.lines)
+                            if candidate.lines
+                            else 0.0
+                        )
+                        region_id = f"{document.id}-{page_index:04d}-region-0000"
+                        for line in candidate.lines:
+                            line.region_id = region_id
+                        page_result = PageResult(
                             page_index=page_index,
                             source_path=source_path,
+                            source_page_index=source_page_index,
+                            prepared_path=prepared_path,
                             width=image.width,
                             height=image.height,
                             lines=candidate.lines,
@@ -171,17 +331,54 @@ class ProcessingPipeline:
                             selected_variant=candidate.variant,
                             selected_model=candidate.model,
                             warnings=warnings,
+                            logical_page_id=logical.id,
+                            source_bbox=logical.source_bbox,
+                            transform=logical.transform,
+                            profile=page_profile,
+                            regions=[
+                                RegionResult(
+                                    id=region_id,
+                                    polygon=[
+                                        (0, 0),
+                                        (image.width, 0),
+                                        (image.width, image.height),
+                                        (0, image.height),
+                                    ],
+                                    reading_order=0,
+                                )
+                            ],
                         )
-                    )
-                    completed += 1
-                    if progress:
-                        progress(
-                            f"{page_label} · Seite fertig",
-                            (completed - 0.10) / max(total_pages, 1),
+                        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                        checkpoint_path.write_text(
+                            page_result.model_dump_json(indent=2), encoding="utf-8"
                         )
+                        pages.append(page_result)
+                        self.database.update_job_page(
+                            job_id,
+                            document.id,
+                            page_index,
+                            logical.id,
+                            "fertig",
+                            "fertig",
+                        )
+                        completed += 1
+                        if progress:
+                            progress(
+                                f"{page_label} · Seite fertig",
+                                min(0.95, (completed - 0.10) / max(total_pages, 1)),
+                            )
+                document.page_count = len(pages)
+                detected_years = [
+                    page.profile.period.exact_year
+                    for page in pages
+                    if page.profile.period.exact_year is not None
+                ]
+                result_year = request.year
+                if result_year is None and detected_years:
+                    result_year = max(set(detected_years), key=detected_years.count)
                 result = DocumentResult(
                     document=document,
-                    year=request.year,
+                    year=result_year,
                     script_hint=request.script_hint,
                     pages=pages,
                 )
@@ -215,37 +412,6 @@ class ProcessingPipeline:
         except Exception as error:
             self.database.update_job(job_id, JobStatus.FAILED, str(error))
             raise
-
-    @staticmethod
-    def _cloud_review(
-        reviewer: OpenRouterReviewer,
-        original: Image.Image,
-        variants: list[PreparedVariant],
-        lines: list[LineResult],
-        request: DocumentRequest,
-        warnings: list[str],
-    ) -> None:
-        if not variants:
-            return
-        local_text = "\n".join(line.text for line in lines)
-        try:
-            review = reviewer.review(
-                original,
-                variants[-1].image,
-                local_text,
-                request.year,
-                request.script_hint,
-            )
-        except (RuntimeError, ValueError, json.JSONDecodeError, httpx.HTTPError):
-            warnings.append("Optionale Cloud-Prüfung war nicht verfügbar")
-            return
-        if review.text and review.text != local_text and lines:
-            lines[0].alternatives.append(
-                AlternativeReading(
-                    text=review.text, model=review.model, confidence=review.confidence
-                )
-            )
-            warnings.append(f"Cloud-Zweitlesung vorhanden ({review.model}, ${review.cost:.4f})")
 
     def _write_batch_index(self, job_id: str, results: list[DocumentResult]) -> Path:
         directory = self.paths.output / f"auftrag-{job_id[:8]}"
