@@ -155,16 +155,38 @@ def test_system_refresh_shows_an_in_place_loading_state(ui_server) -> None:
     with playwright.sync_playwright() as runtime:
         browser = _browser(runtime)
         page = browser.new_page(viewport={"width": 1320, "height": 860})
+        pending = []
+        hold_refresh = {"enabled": False}
+        system_payload = {
+            "local": True,
+            "version": "0.2.0",
+            "documents": 0,
+            "pages": 0,
+            "lines": 0,
+            "models_installed": 0,
+            "models_total": 9,
+            "tesseract_available": False,
+            "database": "/tmp/schriftlotse.sqlite3",
+            "output": "/tmp/SchriftLotse",
+            "cache": "/tmp/SchriftLotse/cache",
+            "openrouter_configured": False,
+        }
+
+        def route_system(route) -> None:
+            if hold_refresh["enabled"]:
+                pending.append(route)
+                return
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(system_payload),
+            )
+
+        page.route("**/api/system", route_system)
         page.goto(url)
         page.get_by_role("button", name="Einstellungen").click()
         page.locator("#system-status .system-row").first.wait_for()
-
-        pending = []
-
-        def hold_system(route) -> None:
-            pending.append(route)
-
-        page.route("**/api/system", hold_system)
+        hold_refresh["enabled"] = True
         page.locator("#refresh-system").click()
         page.wait_for_function(
             "() => document.querySelector('#refresh-system').ariaBusy === 'true'"
@@ -173,7 +195,11 @@ def test_system_refresh_shows_an_in_place_loading_state(ui_server) -> None:
         assert "Lokale Komponenten werden geprüft" in page.locator("#system-status").inner_text()
         assert pending
 
-        pending.pop().continue_()
+        pending.pop().fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(system_payload),
+        )
         page.wait_for_function("() => document.querySelector('#refresh-system').ariaBusy === null")
         assert page.locator("#refresh-system").inner_text() == "Aktualisieren"
         assert page.locator("#system-status .system-row").count() >= 7
