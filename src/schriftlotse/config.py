@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,18 +46,37 @@ class Settings:
     cloud_budget_usd: float = 1.0
     output_dir: str | None = None
     tesseract_command: str = "tesseract"
+    default_quality: str = "beste_lokale_qualitaet"
+    default_script: str = "auto"
+    openrouter_profile: str = "fast"
+    show_preprocessing: bool = True
 
     @classmethod
     def load(cls, paths: AppPaths) -> Settings:
         if not paths.settings.exists():
             return cls()
-        raw: dict[str, Any] = json.loads(paths.settings.read_text(encoding="utf-8"))
+        try:
+            raw: dict[str, Any] = json.loads(paths.settings.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            # A damaged preferences file must never prevent access to the local
+            # archive. The next explicit save replaces it atomically.
+            return cls()
         allowed = cls.__dataclass_fields__.keys()
         return cls(**{key: value for key, value in raw.items() if key in allowed})
 
     def save(self, paths: AppPaths) -> None:
         paths.ensure()
         payload = {name: getattr(self, name) for name in self.__dataclass_fields__}
-        paths.settings.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        encoded = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+        descriptor, temporary = tempfile.mkstemp(
+            prefix="settings-", suffix=".json", dir=paths.settings.parent
         )
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, paths.settings)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)

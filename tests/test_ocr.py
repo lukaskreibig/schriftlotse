@@ -197,9 +197,7 @@ def test_tesseract_never_overwrites_churro_master_line() -> None:
     assert master.lines[0].alternatives[0].text.startswith("geboren")
 
 
-def test_best_local_prefers_viable_churro_over_overconfident_trocr(
-    monkeypatch, app_paths
-) -> None:
+def test_best_local_prefers_viable_churro_over_overconfident_trocr(monkeypatch, app_paths) -> None:
     router = RecognizerRouter(app_paths, Settings())
     router.quality_profile = QualityProfile.BEST_LOCAL
     image = Image.new("RGB", (800, 1000), "white")
@@ -249,6 +247,58 @@ def test_best_local_prefers_viable_churro_over_overconfident_trocr(
     assert result.model == "churro-mlx-8bit"
 
 
+def test_gold_routing_prefers_early_kurrent_specialist_over_churro(monkeypatch, app_paths) -> None:
+    router = RecognizerRouter(app_paths, Settings())
+    router.quality_profile = QualityProfile.BEST_LOCAL
+    image = Image.new("RGB", (1000, 1200), "white")
+
+    def line(identifier, text, model, confidence):
+        return SimpleNamespace(
+            id=identifier,
+            text=text,
+            model=model,
+            confidence=confidence,
+            bbox=(20, 100, 980, 1050),
+            alternatives=[],
+            readings=[],
+            variant="original",
+            review_status=None,
+        )
+
+    early = SimpleNamespace(
+        name="trocr-kurrent-early",
+        recognize=lambda _image, _variant: [
+            line(
+                "early",
+                "dem ChurPrinz auf den RiesenSaal zur Einsegnung geführet",
+                "trocr-kurrent-early",
+                0.78,
+            )
+        ],
+    )
+    churro = SimpleNamespace(
+        name="churro-mlx-8bit",
+        recognize=lambda _image, _variant: [
+            line(
+                "churro",
+                "dem Kurprinzen wurde auf dem Riesensaal die Segnung gegeben",
+                "churro-mlx-8bit",
+                0.90,
+            )
+        ],
+    )
+    monkeypatch.setattr(router, "recognizers", lambda _year, _script: [churro, early])
+
+    result = router.recognize_variants(
+        [SimpleNamespace(image=image, metadata=SimpleNamespace(name="original"))],
+        1665,
+        ScriptHint.HANDWRITING,
+    )
+
+    assert result.model == "trocr-kurrent-early"
+    assert result.expected_cer >= 0.093
+
+
 def test_router_reuses_loaded_recognizers_between_pages(monkeypatch, app_paths) -> None:
     router = RecognizerRouter(app_paths, Settings(advanced_models=False))
     monkeypatch.setattr(
@@ -294,9 +344,7 @@ def test_sparse_handwriting_does_not_become_print(monkeypatch, app_paths) -> Non
         staticmethod(lambda _command="tesseract": {"deu"}),
     )
     recognizer = SimpleNamespace(
-        recognize=lambda _image, _variant: [
-            SimpleNamespace(text="Hermann", confidence=0.91)
-        ]
+        recognize=lambda _image, _variant: [SimpleNamespace(text="Hermann", confidence=0.91)]
     )
     monkeypatch.setattr(router, "_cached_recognizer", lambda _key, _factory: recognizer)
 

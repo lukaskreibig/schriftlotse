@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -71,6 +73,23 @@ class ModelInstallPayload(BaseModel):
 class CloudLinePayload(BaseModel):
     budget_usd: float = Field(default=0.5, gt=0, le=10)
     profile: str = "fast"
+
+
+class SettingsPayload(BaseModel):
+    advanced_models: bool = True
+    semantic_search: bool = True
+    cloud_budget_usd: float = Field(default=1.0, ge=0, le=100)
+    output_dir: str | None = None
+    tesseract_command: str = "tesseract"
+    default_quality: str = "beste_lokale_qualitaet"
+    default_script: str = "auto"
+    openrouter_profile: str = "fast"
+    show_preprocessing: bool = True
+
+
+class OpenRouterKeyPayload(BaseModel):
+    key: str
+    verify_key: bool = Field(default=True, alias="validate")
 
 
 @dataclass(slots=True)
@@ -378,7 +397,12 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         """Small local readiness probe for the native wrapper and diagnostics."""
-        return {"status": "bereit", "local": True, "version": "0.2.0"}
+        return {
+            "status": "bereit",
+            "local": True,
+            "version": "0.2.0",
+            "instance_token": os.getenv("SCHRIFTLOTSE_INSTANCE_TOKEN", "browser"),
+        }
 
     @app.post("/api/uploads")
     async def upload(files: list[UploadFile] = File(...)) -> dict[str, Any]:  # noqa: B008
@@ -390,7 +414,12 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
             suffix = Path(name).suffix.casefold()
             supported = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".pdf", ".heic"}
             safe_suffix = suffix if suffix in supported else ""
-            destination = directory / f"{uuid.uuid4().hex}{safe_suffix}"
+            clean_name = Path(name).stem[:160].strip() or "Scan"
+            destination = directory / f"{clean_name}{safe_suffix}"
+            collision = 2
+            while destination.exists():
+                destination = directory / f"{clean_name}-{collision}{safe_suffix}"
+                collision += 1
             with destination.open("wb") as handle:
                 while chunk := await uploaded.read(1024 * 1024):
                     handle.write(chunk)
@@ -651,6 +680,75 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
     def cloud_models() -> list[dict[str, Any]]:
         return cloud_model_status()
 
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        current = Settings.load(app_state.paths)
+        return {name: getattr(current, name) for name in current.__dataclass_fields__}
+
+    @app.put("/api/settings")
+    def update_settings(payload: SettingsPayload) -> dict[str, Any]:
+        if payload.default_quality not in {"schnell", "beste_lokale_qualitaet", "lizenzklar"}:
+            raise HTTPException(status_code=400, detail="Unbekanntes Standardprofil")
+        if payload.default_script not in {"auto", "handschrift", "druck", "schreibmaschine"}:
+            raise HTTPException(status_code=400, detail="Unbekannte Standardschrift")
+        if payload.openrouter_profile not in {item["key"] for item in cloud_model_status()}:
+            raise HTTPException(status_code=400, detail="Unbekanntes OpenRouter-Modell")
+        output_dir = payload.output_dir.strip() if payload.output_dir else None
+        if output_dir:
+            try:
+                Path(output_dir).expanduser().mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                raise HTTPException(
+                    status_code=400, detail=f"Ausgabeordner nicht nutzbar: {error}"
+                ) from error
+        command = payload.tesseract_command.strip() or "tesseract"
+        settings = Settings(
+            **{**payload.model_dump(), "output_dir": output_dir, "tesseract_command": command}
+        )
+        settings.save(app_state.paths)
+        app_state.settings = settings
+        app_state.search = ArchiveSearch(app_state.database, app_state.models)
+        return {"status": "gespeichert", **get_settings()}
+
+    @app.post("/api/settings/output-folder")
+    def pick_output_folder() -> dict[str, str | None]:
+        process = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                'POSIX path of (choose folder with prompt "Ausgabeordner auswählen")',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        return (
+            {"path": process.stdout.strip() or None} if process.returncode == 0 else {"path": None}
+        )
+
+    @app.get("/api/system")
+    def system_status() -> dict[str, Any]:
+        documents = app_state.database.rows("SELECT count(*) AS amount FROM documents")[0]["amount"]
+        pages = app_state.database.rows("SELECT count(*) AS amount FROM pages")[0]["amount"]
+        lines = app_state.database.rows("SELECT count(*) AS amount FROM lines")[0]["amount"]
+        models = app_state.models.status()
+        settings = Settings.load(app_state.paths)
+        return {
+            "local": True,
+            "version": "0.2.0",
+            "documents": documents,
+            "pages": pages,
+            "lines": lines,
+            "models_installed": sum(bool(model["installed"]) for model in models),
+            "models_total": len(models),
+            "tesseract_available": shutil.which(settings.tesseract_command) is not None,
+            "database": str(app_state.paths.database),
+            "output": settings.output_dir or str(app_state.paths.output),
+            "cache": str(app_state.paths.cache),
+            "openrouter_configured": OpenRouterReviewer().available(),
+        }
+
     @app.post("/api/models/{key}/install", status_code=202)
     def install_model(key: str, payload: ModelInstallPayload) -> dict[str, Any]:
         if key not in MODELS:
@@ -671,12 +769,34 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
         return task.snapshot()
 
     @app.post("/api/openrouter-key")
-    def save_openrouter_key(payload: dict[str, str]) -> dict[str, str]:
-        key = payload.get("key", "").strip()
+    def save_openrouter_key(payload: OpenRouterKeyPayload) -> dict[str, Any]:
+        key = payload.key.strip()
         if not key:
             raise HTTPException(status_code=400, detail="API-Schlüssel fehlt")
+        reviewer = OpenRouterReviewer(api_key=key)
+        try:
+            status = reviewer.key_status(validate=payload.verify_key)
+        except httpx.HTTPError as error:
+            raise HTTPException(
+                status_code=400,
+                detail="Schlüssel konnte bei OpenRouter nicht bestätigt werden",
+            ) from error
         OpenRouterReviewer.save_api_key(key)
-        return {"status": "im macOS-Schlüsselbund gespeichert"}
+        return {"status": "im macOS-Schlüsselbund gespeichert", **status}
+
+    @app.get("/api/openrouter-key")
+    def openrouter_key_status(validate: bool = False) -> dict[str, Any]:
+        try:
+            return OpenRouterReviewer().key_status(validate=validate)
+        except httpx.HTTPError as error:
+            raise HTTPException(
+                status_code=400, detail="OpenRouter-Prüfung fehlgeschlagen"
+            ) from error
+
+    @app.delete("/api/openrouter-key")
+    def delete_openrouter_key() -> dict[str, str]:
+        OpenRouterReviewer.delete_api_key()
+        return {"status": "entfernt"}
 
     @app.get("/api/output/{token}")
     def output(token: str) -> FileResponse:

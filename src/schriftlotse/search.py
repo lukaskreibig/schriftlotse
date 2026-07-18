@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import unicodedata
 from collections import defaultdict
@@ -42,6 +43,8 @@ ARCHIVAL_CONCEPTS: tuple[frozenset[str], ...] = (
             "gestorben",
             "verstorben",
             "sterbefall",
+            "sterbeurkunde",
+            "totenschein",
             "beerdigung",
             "bestattung",
             "begraben",
@@ -346,18 +349,47 @@ class ArchiveSearch:
         variants = {normalized}
         for row in aliases:
             variants.update((row["canonical"], row["alias"]))
-        rows = self.database.rows(
-            "SELECT l.id, l.text, l.normalized, l.alternatives, "
-            "group_concat(r.text, char(30)) AS readings "
-            "FROM lines l LEFT JOIN readings r ON r.line_id=l.id "
-            "GROUP BY l.id ORDER BY l.confidence DESC LIMIT 20000"
-        )
+        # The trigram FTS index narrows spelling-tolerant candidates before
+        # RapidFuzz/phonetics. This keeps a large archive responsive and avoids
+        # the previous confidence-sorted 20,000-line blind spot.
+        candidate_ids: list[str] = []
+        compact_query = normalized.replace(" ", "")
+        if len(compact_query) >= 3:
+            try:
+                trigram_query = " OR ".join(
+                    f'"{compact_query[index : index + 3]}"'
+                    for index in range(len(compact_query) - 2)
+                )
+                candidate_ids = [
+                    row["line_id"]
+                    for row in self.database.rows(
+                        "SELECT line_id FROM lines_trigram WHERE normalized MATCH ? "
+                        "ORDER BY bm25(lines_trigram) LIMIT ?",
+                        (trigram_query, max(2000, query.limit * 80)),
+                    )
+                ]
+            except Exception:
+                candidate_ids = []
+        if candidate_ids:
+            placeholders = ",".join("?" for _ in candidate_ids)
+            rows = self.database.rows(
+                "SELECT l.id, l.text, l.normalized, l.alternatives, "
+                "group_concat(r.text, char(30)) AS readings "
+                "FROM lines l LEFT JOIN readings r ON r.line_id=l.id "
+                f"WHERE l.id IN ({placeholders}) GROUP BY l.id",
+                tuple(candidate_ids),
+            )
+        else:
+            rows = self.database.rows(
+                "SELECT l.id, l.text, l.normalized, l.alternatives, "
+                "group_concat(r.text, char(30)) AS readings "
+                "FROM lines l LEFT JOIN readings r ON r.line_id=l.id "
+                "GROUP BY l.id ORDER BY l.rowid DESC LIMIT 5000"
+            )
         results: list[tuple[str, float, str, str]] = []
         threshold = max(45.0, query.fuzziness * 100)
         for row in rows:
-            candidate_texts = [
-                (row["normalized"], "ähnliche Schreibweise", row["text"])
-            ]
+            candidate_texts = [(row["normalized"], "ähnliche Schreibweise", row["text"])]
             for alternative in json.loads(row["alternatives"] or "[]"):
                 alternative_text = str(alternative.get("text", ""))
                 candidate_texts.append(
@@ -422,6 +454,10 @@ class ArchiveSearch:
                 ):
                     details[line_id] = (reason, matched)
         for rank, (line_id, raw_score) in enumerate(semantic):
+            if query.mode == SearchMode.SMART and line_id not in scores and raw_score < 0.62:
+                continue
+            if query.mode == SearchMode.SEMANTIC and raw_score < 0.42:
+                continue
             scores[line_id] += 0.82 / (60 + rank) + max(0.0, raw_score) * 0.012
             details.setdefault(line_id, ("inhaltlich ähnlicher Begriff", query.text))
         hits: list[SearchHit] = []
@@ -448,7 +484,9 @@ class ArchiveSearch:
                     text=row["text"],
                     matched_form=matched,
                     reason=reason,
-                    score=min(1.0, score * 20),
+                    # Saturating calibration preserves useful differences at
+                    # the top instead of turning unrelated evidence into 1.000.
+                    score=1.0 - math.exp(-max(0.0, score) * 12.0),
                     confidence=row["confidence"],
                     year=year,
                 )

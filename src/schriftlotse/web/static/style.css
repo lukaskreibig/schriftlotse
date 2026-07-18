@@ -22,7 +22,7 @@ button.primary, .button.primary { color: #fff; border-color: var(--ink); backgro
 button.primary:hover, .button.primary:hover { background: var(--ink-2); }
 button.large { width: 100%; display: flex; justify-content: space-between; padding: 13px 17px; margin-top: 10px; }
 .button { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 680; }
-.file-button input { position: absolute; opacity: 0; pointer-events: none; }
+.visually-hidden { position: fixed !important; left: -10000px !important; width: 1px !important; height: 1px !important; opacity: 0 !important; }
 .text-button, .danger-text { border: 0; background: transparent; padding: 3px; font-weight: 600; color: var(--ink-2); }
 .danger-text { color: var(--danger); }
 
@@ -78,9 +78,19 @@ fieldset { min-width: 0; }
 label { display: block; font-weight: 680; }
 label small { color: var(--muted); font-weight: 450; }
 input, select, textarea { width: 100%; margin-top: 5px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: #24373b; padding: 10px 11px; outline: none; }
+select { appearance: none; -webkit-appearance: none; padding-right: 34px; background-color: #fff; background-image: linear-gradient(45deg, transparent 50%, #536a6e 50%), linear-gradient(135deg, #536a6e 50%, transparent 50%); background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
 input:focus, select:focus, textarea:focus { border-color: #5b8489; box-shadow: 0 0 0 3px rgba(35,91,101,.10); }
 textarea { resize: vertical; line-height: 1.55; }
 .hint { color: var(--muted); font-size: 13px; }
+
+.combobox { position: relative; margin-top: 5px; font-weight: 450; }
+.combobox-trigger { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: space-between; margin: 0; padding: 9px 11px; border-radius: 9px; background: #fff; font-weight: 500; text-align: left; transform: none !important; }
+.combobox-trigger i { width: 8px; height: 8px; border-right: 2px solid #617477; border-bottom: 2px solid #617477; transform: rotate(45deg) translateY(-2px); }
+.combobox.open .combobox-trigger { border-color: #5b8489; box-shadow: 0 0 0 3px rgba(35,91,101,.10); }
+.combobox-menu { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 30; overflow: hidden; padding: 5px; border: 1px solid #bfc8c5; border-radius: 11px; background: #fff; box-shadow: 0 14px 34px rgba(19,49,55,.18); }
+.combobox-menu button { width: 100%; display: block; border: 0; border-radius: 7px; padding: 8px 9px; background: transparent; font: 500 13px/1.25 Inter, ui-sans-serif, -apple-system, sans-serif; text-align: left; transform: none; }
+.combobox-menu button:hover, .combobox-menu button:focus, .combobox-menu button[aria-selected="true"] { background: #edf3f2; color: var(--ink); outline: none; }
+.combobox-menu small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
 
 .status { margin-top: 18px; }
 .status-top, .status-foot, .panel-title, .viewer-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
@@ -142,6 +152,7 @@ td:nth-child(2) { white-space: nowrap; }
 .privacy-copy { color: var(--ok) !important; }
 
 .model-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 17px; align-items: start; }
+.model-workspace { min-height: 0; }
 .model { display: grid; grid-template-columns: minmax(160px, 1.3fr) minmax(200px, 1.5fr) 82px auto; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid #ece9e2; }
 .model:last-child { border-bottom: 0; }
 .model .muted { color: var(--muted); font-size: 12px; }
@@ -150,6 +161,35 @@ td:nth-child(2) { white-space: nowrap; }
 .cloud-model-card.recommended { border-color: var(--gold); }
 .cloud-model-card strong, .cloud-model-card small { display: block; }
 .cloud-model-card small { color: var(--muted); }
+.cloud-model-card code { display: block; overflow: hidden; margin-top: 2px; color: #49666b; font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+
+.settings-workspace { display: grid; grid-template-columns: minmax(360px, 1.08fr) minmax(350px, 1fr) minmax(210px, .62fr); gap: 14px; min-height: 0; }
+.preferences-card h3, .cloud-settings h3, .system-card h3 { margin: 0; }
+.settings-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.settings-fields .wide { grid-column: 1 / -1; }
+.inline-field { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
+.inline-field input, .inline-field button { margin-top: 5px; }
+.toggle-list { display: grid; gap: 6px; margin-top: 13px; }
+.toggle-list label { display: grid; grid-template-columns: 19px 1fr; gap: 9px; align-items: start; padding: 8px 9px; border: 1px solid #e6e3dc; border-radius: 9px; font-weight: 450; }
+.toggle-list input { width: 17px; height: 17px; margin: 2px 0 0; accent-color: var(--ink); }
+.toggle-list strong, .toggle-list small { display: block; }
+.toggle-list small { margin-top: 1px; font-size: 11px; }
+.settings-actions { margin-top: 12px; }
+.key-actions { margin-top: 9px; }
+.key-actions button { padding: 8px 10px; font-size: 12px; }
+.system-status { display: grid; gap: 7px; margin-top: 12px; }
+.system-row { display: grid; gap: 1px; padding-bottom: 7px; border-bottom: 1px solid #ece9e2; }
+.system-row span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.system-row strong { overflow: hidden; color: #29474d; font-size: 12px; text-overflow: ellipsis; }
+.status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #47a269; }
+.status-dot.warn { background: #cc8e2a; }
+
+.toast { position: fixed; right: 24px; bottom: 22px; z-index: 100; max-width: 430px; border: 1px solid #94aaa7; border-radius: 11px; background: #173f49; color: #fff; padding: 10px 14px; box-shadow: 0 13px 35px rgba(18,45,51,.25); }
+.toast.error { background: #852f29; border-color: #a95a54; }
+dialog { max-width: 470px; border: 1px solid var(--line); border-radius: 15px; background: var(--card); color: #26383c; padding: 20px; box-shadow: 0 24px 80px rgba(12,35,40,.3); }
+dialog::backdrop { background: rgba(15,35,39,.35); }
+dialog h3 { margin-top: 0; }
+dialog .button-row { justify-content: flex-end; }
 
 /* The native window is a fixed workspace, not a long marketing page. At its
    desktop size every primary control stays visible; only genuinely unbounded
@@ -214,16 +254,30 @@ td:nth-child(2) { white-space: nowrap; }
   .canvas-wrap { max-height: 34vh; }
   .readings { max-height: 105px; overflow: auto; }
 
-  #models .model-grid { flex: 1 1 auto; min-height: 0; }
+  #models .model-grid, #models .model-workspace { flex: 1 1 auto; min-height: 0; }
   #models .card { height: 100%; min-height: 0; overflow: hidden; }
   #model-list { height: calc(100% - 65px); overflow: auto; }
   .model { padding: 8px 0; }
   .cloud-catalog { margin: 10px 0; gap: 5px; }
   .cloud-model-card { padding: 4px 8px; }
+
+  #settings .settings-workspace { flex: 1 1 auto; min-height: 0; }
+  #settings .card { height: 100%; min-height: 0; overflow: hidden; padding: 13px; }
+  #settings .cloud-catalog { max-height: none; overflow: visible; }
+  #settings .cloud-model-card { padding: 2px 8px; }
+  #settings .cloud-model-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #settings #key-status { margin: 5px 0 0; }
+  #settings input, #settings select { padding-top: 7px; padding-bottom: 7px; }
+  #settings .hint { margin: 7px 0; }
+}
+
+@media (min-width: 1041px) and (max-width: 1200px) {
+  .system-card .panel-title { align-items: flex-start; flex-direction: column; }
+  .system-card .panel-title button { padding: 7px 9px; }
 }
 
 @media (max-width: 1040px) {
-  .setup-grid, .review-grid, .model-grid { grid-template-columns: 1fr; }
+  .setup-grid, .review-grid, .model-grid, .settings-workspace { grid-template-columns: 1fr; }
   .review-grid { align-items: stretch; }
   .section-heading { align-items: start; }
 }
@@ -238,7 +292,8 @@ td:nth-child(2) { white-space: nowrap; }
   .setup-grid { display: block; }
   .settings-card { margin-top: 14px; }
   .drop { min-height: 350px; }
-  .two-fields, .search-main, .cloud-controls { grid-template-columns: 1fr; }
+  .two-fields, .search-main, .cloud-controls, .settings-fields { grid-template-columns: 1fr; }
+  .settings-fields .wide { grid-column: auto; }
   .model { grid-template-columns: 1fr; }
   .table-scroll { max-height: 520px; }
 }

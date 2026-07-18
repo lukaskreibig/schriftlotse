@@ -27,6 +27,22 @@ class FakeResponse:
         }
 
 
+class FakeKeyResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self):
+        return {
+            "data": {
+                "label": "SchriftLotse-Test",
+                "limit": 2.0,
+                "limit_remaining": 1.5,
+                "usage": 0.5,
+                "is_free_tier": False,
+            }
+        }
+
+
 def test_openrouter_uses_privacy_flags(monkeypatch) -> None:
     captured = {}
 
@@ -53,3 +69,16 @@ def test_cloud_profiles_have_unique_current_model_ids() -> None:
     model_ids = [option.model for option in CLOUD_MODEL_OPTIONS.values()]
     assert len(model_ids) == len(set(model_ids))
     assert CLOUD_MODEL_OPTIONS["quality"].provider_sort == "throughput"
+    assert CLOUD_MODEL_OPTIONS["balanced"].model == "openai/gpt-5.6-luna"
+    assert CLOUD_MODEL_OPTIONS["quality"].model == "anthropic/claude-sonnet-5"
+
+
+def test_openrouter_key_can_be_validated_without_inference(monkeypatch) -> None:
+    monkeypatch.setattr("schriftlotse.cloud.httpx.get", lambda *args, **kwargs: FakeKeyResponse())
+
+    status = OpenRouterReviewer(api_key="test").key_status(validate=True)
+
+    assert status["configured"] is True
+    assert status["validated"] is True
+    assert status["label"] == "SchriftLotse-Test"
+    assert status["limit_remaining"] == 1.5

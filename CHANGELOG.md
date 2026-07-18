@@ -2,6 +2,19 @@
 
 ## 0.2.0 – 2026-07-18
 
+- nativer WKWebView-Dateidialog und vollständiges Bearbeiten-Menü für ⌘X/⌘C/⌘V/⌘A
+- eigener dynamischer Loopback-Port und Instanzprüfung verhindern eine veraltete Oberfläche
+- kompakter Vier-Schritt-Arbeitsfluss mit barrierearmem Schrift-Combobox und sichtbaren
+  Einstellungen für Profile, Suche, Ausgabe, Tesseract und OpenRouter
+- vier kuratierte OpenRouter-Modelle zeigen Anbieter und exakte, fest benannte Modell-ID;
+  Schlüssel lassen sich vor Nutzung über die Key-API prüfen
+- unabhängige Goldbenchmarks für Kurrent 1665 und 1848–1903 mit CER/WER-CLI
+- epochenpassendes TrOCR erhält bei bekanntem Jahr Goldstandard-Vorrang; CHURRO bleibt
+  Ganzseiten-Zweitleser und Fallback statt pauschaler Hauptlesung
+- Trigram-Vorauswahl skaliert die Fuzzy-/Namenssuche über den gesamten Index; Scores
+  saturieren nicht mehr pauschal bei 1,000
+- Such-Qrels (Recall/MRR), privater 8×4-Cloudvergleich und Browser-E2E-Tests ergänzt
+
 - lokale FastAPI-Oberfläche mit dauerhaftem Status und Verarbeitungsprotokoll
 - automatische Orientierung, konservativer Seitenrand und robuste Buchfalztrennung
 - getrennte Buchseiten werden nochmals einzeln vom Film-/Aufnahmerand befreit
@@ -27,7 +40,7 @@
   Druckseiten nicht mehr gestartet (Testseite: 44,3 s auf 6,7 s)
 - monotone Fortschrittsanzeige mit grober Restzeit auch nach Doppelseitentrennung
 - priorisierte Prüfliste unsicherer Zeilen und sichtbare alternative Modell-Lesungen
-- fünf auswählbare OpenRouter-Profile mit Live-Katalog-geprüften Modell-IDs,
+- vier auswählbare OpenRouter-Profile mit Live-Katalog-geprüften Modell-IDs,
   Kostenbestätigung und ZDR-Weiterleitung
 - nativer, lokal signierter AppKit/WebKit-Rahmen über `scripts/build_macos_app.sh`
 - CLI-Profilwahl über `--profile`

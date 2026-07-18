@@ -367,13 +367,31 @@ class TrOCRRecognizer:
         batch_size = 4 if self.device == "mps" else 2
         for offset in range(0, len(boxes), batch_size):
             batch_boxes = boxes[offset : offset + batch_size]
-            crops = [image.crop(bbox).convert("RGB") for bbox in batch_boxes]
+            # Independent Kurrent gold data showed that tight/whole-line crops
+            # can more than triple CER. Preserve a small context rim around the
+            # detected baseline without changing the jump coordinates.
+            crops = []
+            for left, top, right, bottom in batch_boxes:
+                vertical = max(3, round((bottom - top) * 0.10))
+                horizontal = max(3, round((right - left) * 0.02))
+                crops.append(
+                    image.crop(
+                        (
+                            max(0, left - horizontal),
+                            max(0, top - vertical),
+                            min(image.width, right + horizontal),
+                            min(image.height, bottom + vertical),
+                        )
+                    ).convert("RGB")
+                )
             pixels = self.processor(images=crops, return_tensors="pt").pixel_values.to(self.device)
             with self.torch.inference_mode():
                 generated = self.model.generate(
                     pixels,
                     num_beams=4,
-                    max_length=256,
+                    max_length=128,
+                    no_repeat_ngram_size=5,
+                    repetition_penalty=1.08,
                     return_dict_in_generate=True,
                     output_scores=True,
                 )
@@ -389,6 +407,9 @@ class TrOCRRecognizer:
                         0.05,
                         min(0.92, math.exp(float(scores[batch_index].detach().cpu()))),
                     )
+                calibration_ceiling = 0.90 if self.name == "trocr-kurrent-early" else 0.80
+                confidence = min(confidence, calibration_ceiling)
+                confidence *= 0.55 + 0.45 * _language_quality(text)
                 index = offset + batch_index
                 results.append(
                     LineResult(
@@ -685,6 +706,21 @@ class RecognizerRouter:
             return ["trocr-kurrent-19"]
         return ["trocr-modern"]
 
+    @staticmethod
+    def _benchmark_expected_cer(model: str, year: int | None) -> float | None:
+        """Conservative priors from independent, pinned German gold sets.
+
+        These are routing priors, not promises for an individual page. The
+        values deliberately avoid the much lower in-domain model-card figures.
+        """
+        if model == "trocr-kurrent-early" and year is not None and year < 1800:
+            return 0.093
+        if model == "trocr-kurrent-19" and year is not None and 1800 <= year <= 1945:
+            return 0.212
+        if model.startswith("churro-") and year is not None and year < 1800:
+            return 0.284
+        return None
+
     def preclassify_print(
         self, image: Image.Image, script_hint: ScriptHint
     ) -> tuple[ScriptHint, str, float]:
@@ -898,6 +934,18 @@ class RecognizerRouter:
                     expected_cer = max(0.12, expected_cer)
                 if isinstance(recognizer, ChurroMLXRecognizer):
                     expected_cer = max(0.14, expected_cer)
+                benchmark_cer = self._benchmark_expected_cer(recognizer.name, year)
+                if benchmark_cer is not None:
+                    expected_cer = max(benchmark_cer, expected_cer * 0.45 + benchmark_cer * 0.55)
+                    score = 0.55 * (1.0 - expected_cer) + 0.30 * coverage + 0.15 * language
+                if year is not None and (
+                    (year < 1800 and recognizer.name == "trocr-kurrent-19")
+                    or (year >= 1800 and recognizer.name == "trocr-kurrent-early")
+                ):
+                    # Epoch-incompatible specialists must not win merely through
+                    # an overconfident sequence score.
+                    expected_cer = max(expected_cer, 0.55)
+                    score -= 0.35
                 candidates.append(
                     RecognitionCandidate(
                         model=recognizer.name,
@@ -913,21 +961,24 @@ class RecognizerRouter:
         candidates.sort(key=lambda item: item.score, reverse=True)
         best = candidates[0]
         if self.quality_profile == QualityProfile.BEST_LOCAL:
-            # CHURRO is the whole-page master reader in this profile. Specialist
-            # engines tend to report overconfident sequence scores even when a
-            # line is linguistically implausible (seen especially on early
-            # charters). Keep the scored fallback only when CHURRO returned too
-            # little usable material; every other reading remains selectable.
-            viable_churro = [
+            # Gold-standard routing: specialized line HTR is the primary reader
+            # when the supplied/detected year matches its validated epoch.
+            # CHURRO remains a valuable full-page second opinion and fallback.
+            preferred_model = None
+            if year is not None and year < 1800:
+                preferred_model = "trocr-kurrent-early"
+            elif year is not None and year <= 1945:
+                preferred_model = "trocr-kurrent-19"
+            viable_specialists = [
                 candidate
                 for candidate in candidates
-                if candidate.model.startswith("churro-")
+                if candidate.model == preferred_model
                 and candidate.coverage >= 0.03
                 and len("".join(line.text for line in candidate.lines).strip()) >= 40
                 and _language_quality("\n".join(line.text for line in candidate.lines)) >= 0.20
             ]
-            if viable_churro:
-                best = max(viable_churro, key=lambda item: item.score)
+            if viable_specialists:
+                best = max(viable_specialists, key=lambda item: item.score)
         self._attach_spatial_alternatives(
             best, [candidate for candidate in candidates if candidate is not best]
         )

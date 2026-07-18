@@ -1,24 +1,32 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#import <netinet/in.h>
+#import <sys/socket.h>
+#import <unistd.h>
 
-@interface SchriftLotseDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate>
+@interface SchriftLotseDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) NSTask *backend;
 @property(nonatomic, strong) NSURL *localURL;
+@property(nonatomic, copy) NSString *instanceToken;
 @end
 
 @implementation SchriftLotseDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
-    self.localURL = [NSURL URLWithString:@"http://127.0.0.1:7860"];
+    [self installApplicationMenus];
+    NSInteger port = [self unusedLoopbackPort];
+    self.instanceToken = NSUUID.UUID.UUIDString;
+    self.localURL = [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld", (long)port]];
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     // SchriftLotse stores state in SQLite, not in browser storage. An ephemeral
     // WebKit store prevents an old stylesheet from surviving an app rebuild.
     configuration.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
     self.webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     self.webView.navigationDelegate = self;
+    self.webView.UIDelegate = self;
     self.webView.allowsMagnification = NO;
 
     NSRect frame = NSMakeRect(0, 0, 1320, 860);
@@ -39,31 +47,29 @@
     [NSApp activateIgnoringOtherApps:YES];
     [self showMessage:@"SchriftLotse startet lokal …"
                 detail:@"Modelle und Dokumente bleiben auf diesem Mac."];
-    [self checkServerThenStart];
+    [self startBackendOnPort:port];
 }
 
-- (void)checkServerThenStart {
-    __weak typeof(self) weakSelf = self;
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
-        dataTaskWithURL:self.localURL
-      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        (void)data;
-        (void)error;
-        SchriftLotseDelegate *selfRef = weakSelf;
-        if (!selfRef) return;
-        NSInteger status = [(NSHTTPURLResponse *)response statusCode];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (status == 200) {
-                [selfRef.webView loadRequest:[NSURLRequest requestWithURL:selfRef.localURL]];
-            } else {
-                [selfRef startBackend];
-            }
-        });
-    }];
-    [task resume];
+- (NSInteger)unusedLoopbackPort {
+    int socketFD = socket(AF_INET, SOCK_STREAM, 0);
+    if (socketFD < 0) return 7860;
+    struct sockaddr_in address = {0};
+    address.sin_len = sizeof(address);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    if (bind(socketFD, (struct sockaddr *)&address, sizeof(address)) != 0) {
+        close(socketFD);
+        return 7860;
+    }
+    socklen_t length = sizeof(address);
+    getsockname(socketFD, (struct sockaddr *)&address, &length);
+    NSInteger port = ntohs(address.sin_port);
+    close(socketFD);
+    return port > 0 ? port : 7860;
 }
 
-- (void)startBackend {
+- (void)startBackendOnPort:(NSInteger)port {
     NSURL *resources = NSBundle.mainBundle.resourceURL;
     NSURL *rootFile = [resources URLByAppendingPathComponent:@"repository.txt"];
     NSError *readError = nil;
@@ -95,8 +101,15 @@
 
     NSTask *process = [[NSTask alloc] init];
     process.executableURL = [NSURL fileURLWithPath:uv];
-    process.arguments = @[@"run", @"--frozen", @"schriftlotse", @"serve", @"--port", @"7860"];
+    process.arguments = @[
+        @"run", @"--frozen", @"schriftlotse", @"serve", @"--port",
+        [NSString stringWithFormat:@"%ld", (long)port]
+    ];
     process.currentDirectoryURL = [NSURL fileURLWithPath:root isDirectory:YES];
+    NSMutableDictionary<NSString *, NSString *> *environment =
+        [NSProcessInfo.processInfo.environment mutableCopy];
+    environment[@"SCHRIFTLOTSE_INSTANCE_TOKEN"] = self.instanceToken;
+    process.environment = environment;
     NSString *logDirectory = @"~/Library/Logs".stringByExpandingTildeInPath;
     NSString *logPath = [logDirectory stringByAppendingPathComponent:@"SchriftLotse.log"];
     [NSFileManager.defaultManager createDirectoryAtPath:logDirectory
@@ -133,16 +146,18 @@
         return;
     }
     __weak typeof(self) weakSelf = self;
+    NSURL *healthURL = [self.localURL URLByAppendingPathComponent:@"api/health"];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
-        dataTaskWithURL:self.localURL
+        dataTaskWithURL:healthURL
       completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        (void)data;
         (void)error;
         SchriftLotseDelegate *selfRef = weakSelf;
         if (!selfRef) return;
         NSInteger status = [(NSHTTPURLResponse *)response statusCode];
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (status == 200) {
+            NSDictionary *health = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+            BOOL correctInstance = [health[@"instance_token"] isEqualToString:selfRef.instanceToken];
+            if (status == 200 && correctInstance) {
                 [selfRef.webView loadRequest:[NSURLRequest requestWithURL:selfRef.localURL]];
             } else {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
@@ -151,6 +166,44 @@
         });
     }];
     [task resume];
+}
+
+- (void)installApplicationMenus {
+    NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
+    NSMenuItem *appItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+    [mainMenu addItem:appItem];
+    NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"SchriftLotse"];
+    [appMenu addItemWithTitle:@"SchriftLotse beenden" action:@selector(terminate:) keyEquivalent:@"q"];
+    appItem.submenu = appMenu;
+
+    NSMenuItem *editItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+    [mainMenu addItem:editItem];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Bearbeiten"];
+    [editMenu addItemWithTitle:@"Widerrufen" action:@selector(undo:) keyEquivalent:@"z"];
+    [editMenu addItemWithTitle:@"Wiederholen" action:@selector(redo:) keyEquivalent:@"Z"];
+    [editMenu addItem:NSMenuItem.separatorItem];
+    [editMenu addItemWithTitle:@"Ausschneiden" action:@selector(cut:) keyEquivalent:@"x"];
+    [editMenu addItemWithTitle:@"Kopieren" action:@selector(copy:) keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"Einsetzen" action:@selector(paste:) keyEquivalent:@"v"];
+    [editMenu addItemWithTitle:@"Alles auswählen" action:@selector(selectAll:) keyEquivalent:@"a"];
+    editItem.submenu = editMenu;
+    NSApp.mainMenu = mainMenu;
+}
+
+- (void)webView:(WKWebView *)webView
+runOpenPanelWithParameters:(WKOpenPanelParameters *)parameters
+initiatedByFrame:(WKFrameInfo *)frame
+completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler {
+    (void)webView;
+    (void)frame;
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = NO;
+    panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
+    panel.resolvesAliases = YES;
+    [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
+        completionHandler(result == NSModalResponseOK ? panel.URLs : nil);
+    }];
 }
 
 - (void)showMessage:(NSString *)title detail:(NSString *)detail {

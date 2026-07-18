@@ -10,6 +10,12 @@ from rich.console import Console
 from rich.table import Table
 
 from schriftlotse.app import launch
+from schriftlotse.benchmarks import (
+    evaluate_search,
+    run_cloud_manifest,
+    run_public_gold,
+    run_public_search_benchmark,
+)
 from schriftlotse.cloud import OpenRouterReviewer
 from schriftlotse.config import AppPaths, Settings
 from schriftlotse.database import Database
@@ -27,7 +33,9 @@ from schriftlotse.search import ArchiveSearch
 
 app = typer.Typer(help="SchriftLotse – historische Dokumente lokal entziffern und durchsuchen.")
 models_app = typer.Typer(help="Freie lokale Modelle verwalten.")
+benchmark_app = typer.Typer(help="OCR- und Suchqualität gegen bekannte Soll-Ergebnisse messen.")
 app.add_typer(models_app, name="models")
+app.add_typer(benchmark_app, name="benchmark")
 console = Console()
 
 
@@ -56,9 +64,7 @@ def batch(
     source: Annotated[Path, typer.Argument(exists=True, readable=True)],
     year: Annotated[int | None, typer.Option("--year", "-y")] = None,
     script: Annotated[ScriptHint, typer.Option("--script", "-s")] = ScriptHint.AUTO,
-    profile: Annotated[
-        QualityProfile, typer.Option("--profile", "-p")
-    ] = QualityProfile.BEST_LOCAL,
+    profile: Annotated[QualityProfile, typer.Option("--profile", "-p")] = QualityProfile.BEST_LOCAL,
     cloud: Annotated[bool, typer.Option("--cloud/--no-cloud")] = False,
     budget: Annotated[float, typer.Option("--budget")] = 1.0,
     advanced: Annotated[bool, typer.Option("--advanced/--basic")] = True,
@@ -238,3 +244,57 @@ def doctor() -> None:
         "models": ModelManager(paths).status(),
     }
     console.print_json(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+@benchmark_app.command("gold")
+def benchmark_gold(
+    dataset: Annotated[str, typer.Argument(help="kurrent-19 oder kurrent-1665")],
+    sample_size: Annotated[int, typer.Option("--sample", min=8, max=1000)] = 96,
+    output: Annotated[Path | None, typer.Option("--output")] = None,
+) -> None:
+    """Öffentlichen, unabhängigen PAGE-XML-Goldstandard herunterladen und messen."""
+    result = run_public_gold(dataset, sample_size)
+    encoded = json.dumps(result, ensure_ascii=False, indent=2)
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(encoded, encoding="utf-8")
+        console.print(f"[green]Benchmarkbericht gespeichert:[/] {output}")
+    console.print_json(encoded)
+
+
+@benchmark_app.command("search")
+def benchmark_search(
+    qrels: Annotated[Path, typer.Argument(exists=True, readable=True)],
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 10,
+) -> None:
+    """Suchindex mit privaten Query-Relevance-Urteilen (JSON) bewerten."""
+    paths = AppPaths.default()
+    result = evaluate_search(
+        ArchiveSearch(Database(paths.database), ModelManager(paths)), qrels, limit
+    )
+    console.print_json(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@benchmark_app.command("search-public")
+def benchmark_search_public(
+    dataset: Annotated[str, typer.Argument(help="kurrent-19 oder kurrent-1665")],
+    queries: Annotated[int, typer.Option("--queries", min=10, max=500)] = 40,
+) -> None:
+    """Suche mit echten Goldtextzeilen und reproduzierbaren OCR-Tippfehlern messen."""
+    result = run_public_search_benchmark(dataset, queries)
+    console.print_json(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@benchmark_app.command("cloud")
+def benchmark_cloud(
+    manifest: Annotated[Path, typer.Argument(exists=True, readable=True)],
+    budget: Annotated[float, typer.Option("--budget", min=0.1, max=20.0)] = 2.0,
+    output: Annotated[Path | None, typer.Option("--output")] = None,
+) -> None:
+    """Bis zu acht private Goldausschnitte mit vier kuratierten Cloudmodellen messen."""
+    result = run_cloud_manifest(manifest, budget)
+    encoded = json.dumps(result, ensure_ascii=False, indent=2)
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(encoded, encoding="utf-8")
+    console.print_json(encoded)

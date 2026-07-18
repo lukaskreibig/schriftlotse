@@ -12,8 +12,8 @@ Schreibmaschinentext von etwa 1800 bis 1945; ältere Quellen werden bestmöglich
 - lokale Stapelverarbeitung; OpenRouter nur für einen ausdrücklich gewählten Ausschnitt
 - automatische Orientierung, konservativer Randbeschnitt und Buchfalztrennung
 - adaptive Varianten für Beleuchtung, Kontrast, Schatten und Binarisierung
-- Vergleich freier Tesseract-, Kraken-, TrOCR- und Party-Modelle mit CHURRO als lokalem
-  Standard-Ganzseitenleser im Qualitätsprofil
+- goldstandardgestütztes Routing freier Tesseract-, Kraken-, TrOCR- und Party-Modelle;
+  CHURRO arbeitet lokal als Ganzseiten-Zweitleser und Fallback
 - sichere Seiten-Zwischenstände und Fortsetzen nach einem Abbruch
 - originalgetreue Fassung, Lesefassung, PDF, DOCX, JSON, PAGE XML und ALTO
 - eScriptorium-Paket und Rückimport korrigierter PAGE-XML-Dateien
@@ -42,7 +42,10 @@ scripts/build_macos_app.sh
 open dist/SchriftLotse.app
 ```
 
-Die kleine native App verwendet AppKit/WebKit und startet denselben lokalen Python-Dienst.
+Die kleine native App verwendet AppKit/WebKit und startet einen eigenen lokalen Python-Dienst
+auf einem freien Loopback-Port. Ein Instanz-Token verhindert, dass sie versehentlich eine
+alte laufende Oberfläche übernimmt. Dateidialog, Zwischenablage und Standard-Tastenkürzel
+sind nativ angebunden.
 Sie enthält bewusst keine Modelle oder privaten Dokumente. Das Build-Skript hinterlegt den
 aktuellen Repository-Pfad; nach einem Verschieben des Repositories die App einfach neu bauen.
 
@@ -62,8 +65,9 @@ uv run schriftlotse gui
 - **Archivsuche:** intelligent, exakt, nach Namen oder nach Bedeutung suchen; Treffer öffnen
   direkt die richtige logische Seite und Zeile. Unsichere Stellen lassen sich priorisiert
   abarbeiten; anschließend erzeugt **Aktuelle Fassung exportieren** alle Ausgabeformate neu.
-- **Modelle & Datenschutz:** lokale Modelle installieren und optional einen OpenRouter-Key im
-  macOS-Schlüsselbund speichern.
+- **Modelle:** lokale Gewichte und Installationsstatus verwalten.
+- **Einstellungen:** Standardprofil, Schrift, Ausgabeordner, Suche und alle Cloudoptionen
+  sichtbar konfigurieren; OpenRouter-Schlüssel prüfen und im macOS-Schlüsselbund speichern.
 
 Das Jahr darf leer bleiben. Eine Zahl im Dateinamen wie `brief-1872.jpg` gilt als starker
 Hinweis. Ein einzelnes möglicherweise falsch gelesenes OCR-Jahr wird bewusst nicht als
@@ -75,8 +79,9 @@ weiterhin die zuverlässigste Modellsteuerung.
 - **Schnell:** Tesseract und leichte lokale Verarbeitung.
 - **Lizenzklar:** TrOCR, Kraken/UB, Party und Tesseract ohne Forschungsgewichte. Party läuft
   bewusst nur hier, weil es auf dem M3-CPU-Pfad erheblich langsamer als CHURRO ist.
-- **Beste lokale Qualität (Standard):** zusätzlich CHURRO 3B als MLX-8-Bit-Ganzseitenleser,
-  nachdem dessen Qwen Research License ausdrücklich bestätigt wurde.
+- **Beste lokale Qualität (Standard):** das epochenpassende TrOCR und CHURRO 3B MLX 8-Bit
+  werden verglichen. Bei bekanntem Jahr priorisiert der Router den am unabhängigen
+  Goldstandard geprüften Spezialisten; CHURRO bleibt Ganzseiten-Zweitleser und Fallback.
 
 TrOCR nutzt auf dem M3 das MPS-Backend. Kraken/UB und Party laufen auf macOS über den stabilen
 CPU-Pfad. CHURRO nutzt MLX/Metal und erhält gezielt die beleuchtungsnormalisierte Seite. Seine
@@ -135,17 +140,17 @@ mögliche Suchspur erhalten.
 - ZDR und `data_collection: deny`; Key im macOS-Schlüsselbund
 - lokale Pfade und Modellstatus über `uv run schriftlotse doctor`
 
-Für die optionale OpenRouter-Zweitprüfung stehen fünf explizite Profile bereit:
+Für die optionale OpenRouter-Zweitprüfung stehen vier explizite, reproduzierbare Profile bereit:
 
-- **Schnell & stark:** Gemini 3.5 Flash (Standard)
+- **Schnell:** Gemini 3.5 Flash (Standard)
+- **Ausgewogen:** GPT-5.6 Luna
 - **OCR-Preis/Leistung:** Qwen3 VL 235B A22B Instruct
-- **Maximale Zweitprüfung:** Claude Opus 4.8
-- **GPT-Spitzenmodell:** GPT-5.5
-- **Kostenlos:** OpenRouters wechselnder Free Models Router
+- **Sorgfältig:** Claude Sonnet 5
 
 Die IDs und Preise wurden am 18. Juli 2026 gegen den Live-Katalog geprüft. Es gibt keinen
 öffentlichen Benchmark, der diese Modelle belastbar auf genau deutscher Kurrent dieses
-Bestands vergleicht; die Bezeichnungen sind daher Empfehlungen, keine Genauigkeitsgarantie.
+Bestands vergleicht; deshalb kann die Benchmark-CLI acht private Goldausschnitte kontrolliert
+gegen alle vier Modelle testen. Die Bezeichnungen sind Empfehlungen, keine Garantie.
 Pro Aufruf werden ZDR, `data_collection: deny`, strukturierte Ausgabe und ein nutzerseitiges
 Kostenlimit verlangt. Ohne API-Schlüssel bleibt die Funktion vollständig inaktiv.
 
@@ -166,6 +171,10 @@ uv run mypy src
 uv run pytest
 scripts/build_macos_app.sh
 ```
+
+Reproduzierbare Qualitätsläufe und die gemessenen CER-Werte stehen in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md). Browser-E2E-Tests prüfen Dateiupload, Dropdown,
+Einstellungen, Tastaturbedienung und die scrollfreie 1100×800-/1320×860-Arbeitsfläche.
 
 Bitte keine privaten Scans in Issues oder Commits hochladen. Der Anwendungscode steht unter
 Apache-2.0; Modelllizenzen gelten separat.

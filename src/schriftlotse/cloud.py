@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import os
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -33,10 +34,17 @@ CLOUD_MODEL_OPTIONS: dict[str, CloudModelOption] = {
     "fast": CloudModelOption(
         key="fast",
         model="google/gemini-3.5-flash",
-        label="Schnell & stark (empfohlen)",
-        description="Sehr schnelles aktuelles Visionmodell für die tägliche Zweitprüfung.",
+        label="Gemini 3.5 Flash · schnell (empfohlen)",
+        description="Schnelles Visionmodell für die tägliche Zweitprüfung.",
         price_hint="$1,50 Eingabe / $9 Ausgabe je 1 Mio. Token",
         recommended=True,
+    ),
+    "balanced": CloudModelOption(
+        key="balanced",
+        model="openai/gpt-5.6-luna",
+        label="GPT-5.6 Luna · ausgewogen",
+        description="Schnelle, kostengünstige hochwertige Vergleichslesung.",
+        price_hint="$1 Eingabe / $6 Ausgabe je 1 Mio. Token",
     ),
     "ocr_value": CloudModelOption(
         key="ocr_value",
@@ -47,26 +55,11 @@ CLOUD_MODEL_OPTIONS: dict[str, CloudModelOption] = {
     ),
     "quality": CloudModelOption(
         key="quality",
-        model="anthropic/claude-opus-4.8",
-        label="Maximale Zweitprüfung",
-        description="Langsameres Spitzenmodell für besonders schwierige Einzelstellen.",
-        price_hint="$5 Eingabe / $25 Ausgabe je 1 Mio. Token",
+        model="anthropic/claude-sonnet-5",
+        label="Claude Sonnet 5 · sorgfältig",
+        description="Sorgfältige Zweitprüfung für besonders schwierige Einzelstellen.",
+        price_hint="$2 Eingabe / $10 Ausgabe je 1 Mio. Token",
         provider_sort="throughput",
-    ),
-    "gpt": CloudModelOption(
-        key="gpt",
-        model="openai/gpt-5.5",
-        label="GPT-Spitzenmodell",
-        description="Alternative hochwertige Lesung zum direkten Modellvergleich.",
-        price_hint="$5 Eingabe / $30 Ausgabe je 1 Mio. Token",
-        provider_sort="throughput",
-    ),
-    "free": CloudModelOption(
-        key="free",
-        model="openrouter/free",
-        label="Kostenloser Router (wechselnd)",
-        description="Wählt ein verfügbares Gratis-Visionmodell; Qualität ist nicht reproduzierbar.",
-        price_hint="kostenlos, Verfügbarkeit schwankt",
     ),
 }
 
@@ -98,8 +91,36 @@ class OpenRouterReviewer:
     def save_api_key(api_key: str) -> None:
         keyring.set_password("SchriftLotse", "openrouter", api_key.strip())
 
+    @staticmethod
+    def delete_api_key() -> None:
+        with suppress(keyring.errors.PasswordDeleteError):
+            keyring.delete_password("SchriftLotse", "openrouter")
+
     def available(self) -> bool:
         return bool(self.api_key)
+
+    def key_status(self, *, validate: bool = False) -> dict[str, Any]:
+        status: dict[str, Any] = {"configured": self.available(), "validated": False}
+        if not self.api_key or not validate:
+            return status
+        response = httpx.get(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json().get("data", {})
+        status.update(
+            {
+                "validated": True,
+                "label": data.get("label"),
+                "limit": data.get("limit"),
+                "limit_remaining": data.get("limit_remaining"),
+                "usage": data.get("usage"),
+                "is_free_tier": bool(data.get("is_free_tier", False)),
+            }
+        )
+        return status
 
     @staticmethod
     def option(profile: str) -> CloudModelOption:

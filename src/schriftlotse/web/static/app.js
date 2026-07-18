@@ -1,8 +1,28 @@
-const state = { sources: [], job: null, hits: [], selected: null, cloudModels: [] };
+const state = { sources: [], job: null, hits: [], selected: null, cloudModels: [], settings: null };
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
 }[char]));
+
+let toastTimer = null;
+function notify(message, error = false) {
+  const toast = $('toast');
+  toast.textContent = message;
+  toast.classList.toggle('error', error);
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.hidden = true; }, 4200);
+}
+
+function askConfirmation(title, copy) {
+  const dialog = $('confirm-dialog');
+  $('confirm-title').textContent = title;
+  $('confirm-copy').textContent = copy;
+  dialog.showModal();
+  return new Promise(resolve => {
+    dialog.onclose = () => resolve(dialog.returnValue === 'confirm');
+  });
+}
 
 document.querySelectorAll('.tabs button').forEach(button => {
   button.onclick = () => openTab(button.dataset.tab);
@@ -15,7 +35,53 @@ function openTab(name) {
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   if (name === 'models') loadModels();
   if (name === 'search') loadDocuments();
+  if (name === 'settings') { loadSettings(); loadSystemStatus(); loadKeyStatus(); }
 }
+
+function setupCombobox(root) {
+  const trigger = root.querySelector('.combobox-trigger');
+  const menu = root.querySelector('.combobox-menu');
+  const value = root.querySelector('input[type="hidden"]');
+  const options = [...menu.querySelectorAll('[role="option"]')];
+  const close = () => {
+    root.classList.remove('open');
+    trigger.setAttribute('aria-expanded', 'false');
+    menu.hidden = true;
+  };
+  const choose = option => {
+    value.value = option.dataset.value;
+    trigger.querySelector('span').textContent = option.childNodes[0].textContent.trim();
+    options.forEach(item => item.setAttribute('aria-selected', String(item === option)));
+    close();
+    value.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  trigger.onclick = () => {
+    const open = menu.hidden;
+    document.querySelectorAll('.combobox.open').forEach(item => {
+      item.classList.remove('open');
+      item.querySelector('.combobox-menu').hidden = true;
+      item.querySelector('.combobox-trigger').setAttribute('aria-expanded', 'false');
+    });
+    if (open) {
+      root.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      menu.hidden = false;
+      (options.find(item => item.getAttribute('aria-selected') === 'true') || options[0]).focus();
+    }
+  };
+  options.forEach(option => {
+    option.onclick = () => choose(option);
+    option.onkeydown = event => {
+      const index = options.indexOf(option);
+      if (event.key === 'ArrowDown') { event.preventDefault(); options[(index + 1) % options.length].focus(); }
+      if (event.key === 'ArrowUp') { event.preventDefault(); options[(index - 1 + options.length) % options.length].focus(); }
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); choose(option); }
+      if (event.key === 'Escape') { event.preventDefault(); close(); trigger.focus(); }
+    };
+  });
+  document.addEventListener('click', event => { if (!root.contains(event.target)) close(); });
+}
+document.querySelectorAll('.combobox').forEach(setupCombobox);
 
 document.querySelectorAll('input[name="quality"]').forEach(input => {
   input.onchange = () => document.querySelectorAll('.profile-option').forEach(label => {
@@ -58,7 +124,7 @@ async function loadRecovery() {
     button.onclick = async () => {
       const response = await fetch(`/api/jobs/${button.dataset.resume}/resume`, { method: 'POST' });
       const data = await response.json();
-      if (!response.ok) return alert(data.detail || 'Fortsetzen fehlgeschlagen');
+      if (!response.ok) { notify(data.detail || 'Fortsetzen fehlgeschlagen', true); return; }
       state.job = data.id;
       watchJob(data.id);
       box.hidden = true;
@@ -77,7 +143,12 @@ async function upload(files) {
   renderSources();
 }
 
-$('files').onchange = event => upload(event.target.files).catch(error => alert(error.message));
+$('choose-files').onclick = () => $('files').click();
+$('files').onchange = event => {
+  upload(event.target.files)
+    .then(() => { event.target.value = ''; notify('Dateien wurden hinzugefügt.'); })
+    .catch(error => notify(error.message, true));
+};
 const dropzone = $('dropzone');
 ['dragenter', 'dragover'].forEach(name => dropzone.addEventListener(name, event => {
   event.preventDefault();
@@ -87,19 +158,24 @@ const dropzone = $('dropzone');
   event.preventDefault();
   dropzone.classList.remove('drag');
 }));
-dropzone.addEventListener('drop', event => upload(event.dataTransfer.files).catch(error => alert(error.message)));
+dropzone.addEventListener('drop', event => upload(event.dataTransfer.files).catch(error => notify(error.message, true)));
 
 $('folder').onclick = async () => {
-  const response = await fetch('/api/folder', { method: 'POST' });
-  const data = await response.json();
-  if (data.source && !state.sources.some(item => item.id === data.source.id)) {
-    state.sources.push(data.source);
-    renderSources();
+  try {
+    const response = await fetch('/api/folder', { method: 'POST' });
+    const data = await response.json();
+    if (data.source && !state.sources.some(item => item.id === data.source.id)) {
+      state.sources.push(data.source);
+      renderSources();
+      notify('Ordner wurde hinzugefügt.');
+    }
+  } catch (error) {
+    notify(`Ordnerauswahl fehlgeschlagen: ${error.message}`, true);
   }
 };
 
 $('start').onclick = async () => {
-  if (!state.sources.length) return alert('Bitte zuerst Dateien oder einen Ordner auswählen.');
+  if (!state.sources.length) { notify('Bitte zuerst Dateien oder einen Ordner auswählen.', true); return; }
   const payload = {
     sources: state.sources.map(source => source.id),
     year: $('year').value ? Number($('year').value) : null,
@@ -112,7 +188,7 @@ $('start').onclick = async () => {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload)
   });
   const data = await response.json();
-  if (!response.ok) return alert(data.detail || 'Start fehlgeschlagen');
+  if (!response.ok) { notify(data.detail || 'Start fehlgeschlagen', true); return; }
   state.job = data.id;
   $('cancel').hidden = false;
   $('exports').innerHTML = '';
@@ -185,7 +261,7 @@ async function runSearch() {
       limit: 100
     })
   });
-  if (!response.ok) return alert('Suche fehlgeschlagen.');
+  if (!response.ok) { notify('Suche fehlgeschlagen.', true); return; }
   renderHits(await response.json(), `Treffer für „${text}“`);
 }
 
@@ -195,7 +271,7 @@ function renderHits(hits, title) {
   $('result-count').textContent = String(hits.length);
   $('empty-results').hidden = Boolean(hits.length);
   $('results').innerHTML = hits.map((hit, index) =>
-    `<tr data-index="${index}"><td>${esc(hit.document_title)}</td><td>${Number(hit.page_index) + 1}${hit.year ? `<br><small>${hit.year}</small>` : ''}</td><td>${esc(hit.matched_form || hit.text)}${hit.matched_form && hit.matched_form !== hit.text ? `<br><small>Aktuelle Fassung: ${esc(hit.text)}</small>` : ''}</td><td>${esc(hit.reason)}</td></tr>`
+    `<tr data-index="${index}" tabindex="0"><td>${esc(hit.document_title)}</td><td>${Number(hit.page_index) + 1}${hit.year ? `<br><small>${hit.year}</small>` : ''}</td><td>${esc(hit.matched_form || hit.text)}${hit.matched_form && hit.matched_form !== hit.text ? `<br><small>Aktuelle Fassung: ${esc(hit.text)}</small>` : ''}</td><td>${esc(hit.reason)}</td></tr>`
   ).join('');
   $('results').querySelectorAll('tr').forEach(row => {
     row.onclick = () => {
@@ -203,6 +279,7 @@ function renderHits(hits, title) {
       row.classList.add('selected');
       showHit(hits[Number(row.dataset.index)]);
     };
+    row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); row.click(); } };
   });
 }
 
@@ -211,7 +288,7 @@ $('query').onkeydown = event => { if (event.key === 'Enter') runSearch(); };
 $('fuzziness').oninput = () => { $('fuzziness-value').textContent = `${$('fuzziness').value} %`; };
 $('review-queue').onclick = async () => {
   const response = await fetch('/api/review-queue?limit=200');
-  if (!response.ok) return alert('Prüfliste konnte nicht geladen werden.');
+  if (!response.ok) { notify('Prüfliste konnte nicht geladen werden.', true); return; }
   renderHits(await response.json(), 'Unsichere Stellen — niedrigste Sicherheit zuerst');
 };
 
@@ -294,17 +371,24 @@ async function loadCloudModels() {
   if (!response.ok) return;
   state.cloudModels = await response.json();
   $('cloud-model').innerHTML = state.cloudModels.map(option =>
+    `<option value="${esc(option.key)}">${esc(option.label)} — ${esc(option.model)}</option>`
+  ).join('');
+  $('setting-cloud-model').innerHTML = state.cloudModels.map(option =>
     `<option value="${esc(option.key)}">${esc(option.label)}</option>`
   ).join('');
+  if (state.settings?.openrouter_profile) {
+    $('cloud-model').value = state.settings.openrouter_profile;
+    $('setting-cloud-model').value = state.settings.openrouter_profile;
+  }
   renderCloudHelp();
   $('cloud-catalog').innerHTML = state.cloudModels.map(option =>
-    `<div class="cloud-model-card ${option.recommended ? 'recommended' : ''}"><strong>${esc(option.label)}</strong><small>${esc(option.description)} ${esc(option.price_hint)}</small></div>`
+    `<div class="cloud-model-card ${option.recommended ? 'recommended' : ''}"><strong>${esc(option.label)}</strong><code>${esc(option.model)}</code><small>${esc(option.description)} ${esc(option.price_hint)}</small></div>`
   ).join('');
 }
 
 function renderCloudHelp() {
   const option = state.cloudModels.find(model => model.key === $('cloud-model').value);
-  $('cloud-model-help').textContent = option ? `${option.description} ${option.price_hint}.` : '';
+  $('cloud-model-help').textContent = option ? `${option.model} · ${option.description} ${option.price_hint}.` : '';
 }
 $('cloud-model').onchange = renderCloudHelp;
 
@@ -312,7 +396,11 @@ $('cloud-review').onclick = async () => {
   if (!state.selected) return;
   const option = state.cloudModels.find(model => model.key === $('cloud-model').value);
   const budget = Number($('cloud-budget').value);
-  if (!confirm(`Nur diesen markierten Ausschnitt an „${option?.label || 'OpenRouter'}“ senden? Kostenlimit: ${budget.toFixed(2)} $.`)) return;
+  const approved = await askConfirmation(
+    'Cloud-Zweitprüfung starten?',
+    `Nur dieser markierte Ausschnitt wird an ${option?.label || 'OpenRouter'} (${option?.model || 'Modell'}) gesendet. Kostenlimit: ${budget.toFixed(2)} $.`
+  );
+  if (!approved) return;
   const button = $('cloud-review');
   button.disabled = true;
   $('correction-status').textContent = 'OpenRouter prüft den ausgewählten Ausschnitt …';
@@ -342,7 +430,10 @@ async function loadModels() {
 async function installModel(key) {
   let accept = true;
   if (key === 'churro-mlx-8bit') {
-    accept = confirm('CHURRO benötigt etwa 4,4 GB und steht unter der Qwen Research License. Für Forschungs-/nichtkommerzielle Nutzung bestätigen und lokal installieren?');
+    accept = await askConfirmation(
+      'CHURRO lokal installieren?',
+      'CHURRO benötigt etwa 4,4 GB und steht unter der Qwen Research License. Die Installation ist für deine Forschungs-/nichtkommerzielle Nutzung vorgesehen.'
+    );
   }
   if (!accept) return;
   const response = await fetch(`/api/models/${key}/install`, {
@@ -350,7 +441,7 @@ async function installModel(key) {
     body: JSON.stringify({ accept_license: accept })
   });
   const data = await response.json();
-  if (!response.ok) return alert(data.detail || 'Installation fehlgeschlagen');
+  if (!response.ok) { notify(data.detail || 'Installation fehlgeschlagen', true); return; }
   watchModelInstall(data.id);
 }
 
@@ -368,17 +459,141 @@ async function watchModelInstall(id) {
 
 $('save-openrouter-key').onclick = async () => {
   const key = $('openrouter-key').value.trim();
-  if (!key) return;
+  if (!key) { notify('Bitte zuerst einen API-Schlüssel einfügen.', true); return; }
+  $('key-status').textContent = 'Schlüssel wird bei OpenRouter geprüft …';
   const response = await fetch('/api/openrouter-key', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key })
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key, validate: true })
   });
-  $('key-status').textContent = response.ok ? 'Sicher gespeichert.' : 'Speichern fehlgeschlagen.';
+  const data = await response.json();
+  if (!response.ok) {
+    $('key-status').textContent = data.detail || 'Prüfung fehlgeschlagen.';
+    notify($('key-status').textContent, true);
+    return;
+  }
+  $('key-status').textContent = `Sicher gespeichert und bestätigt${data.label ? ` · ${data.label}` : ''}.`;
   $('openrouter-key').value = '';
+  loadSystemStatus();
 };
 
-renderSources();
-loadRecovery();
-loadDocuments();
-loadCloudModels();
-const initialTab = location.hash.slice(1);
-if (['read', 'search', 'models'].includes(initialTab)) openTab(initialTab);
+$('validate-openrouter-key').onclick = () => loadKeyStatus(true);
+$('delete-openrouter-key').onclick = async () => {
+  const approved = await askConfirmation('API-Schlüssel entfernen?', 'Der OpenRouter-Schlüssel wird aus dem macOS-Schlüsselbund gelöscht.');
+  if (!approved) return;
+  const response = await fetch('/api/openrouter-key', { method: 'DELETE' });
+  $('key-status').textContent = response.ok ? 'Kein OpenRouter-Schlüssel gespeichert.' : 'Entfernen fehlgeschlagen.';
+  loadSystemStatus();
+};
+
+function setScriptCombobox(value) {
+  const root = $('script-combobox');
+  const option = root.querySelector(`[role="option"][data-value="${value}"]`);
+  if (!option) return;
+  $('script').value = value;
+  root.querySelector('.combobox-trigger span').textContent = option.childNodes[0].textContent.trim();
+  root.querySelectorAll('[role="option"]').forEach(item => item.setAttribute('aria-selected', String(item === option)));
+}
+
+async function loadSettings() {
+  const response = await fetch('/api/settings');
+  if (!response.ok) { notify('Einstellungen konnten nicht geladen werden.', true); return; }
+  const settings = await response.json();
+  state.settings = settings;
+  $('setting-quality').value = settings.default_quality;
+  $('setting-script').value = settings.default_script;
+  $('setting-output').value = settings.output_dir || '';
+  $('setting-tesseract').value = settings.tesseract_command;
+  $('setting-budget').value = settings.cloud_budget_usd;
+  $('setting-advanced').checked = settings.advanced_models;
+  $('setting-semantic').checked = settings.semantic_search;
+  $('setting-preprocessing').checked = settings.show_preprocessing;
+  if (state.cloudModels.length) $('setting-cloud-model').value = settings.openrouter_profile;
+
+  const quality = document.querySelector(`input[name="quality"][value="${settings.default_quality}"]`);
+  if (quality && !state.job) {
+    quality.checked = true;
+    quality.dispatchEvent(new Event('change', { bubbles: true }));
+    setScriptCombobox(settings.default_script);
+  }
+  $('cloud-budget').value = [...$('cloud-budget').options].some(item => Number(item.value) === Number(settings.cloud_budget_usd))
+    ? String(settings.cloud_budget_usd)
+    : $('cloud-budget').value;
+}
+
+$('save-settings').onclick = async () => {
+  const payload = {
+    advanced_models: $('setting-advanced').checked,
+    semantic_search: $('setting-semantic').checked,
+    cloud_budget_usd: Number($('setting-budget').value || 0),
+    output_dir: $('setting-output').value.trim() || null,
+    tesseract_command: $('setting-tesseract').value.trim() || 'tesseract',
+    default_quality: $('setting-quality').value,
+    default_script: $('setting-script').value,
+    openrouter_profile: $('setting-cloud-model').value,
+    show_preprocessing: $('setting-preprocessing').checked
+  };
+  $('settings-status').textContent = 'Wird gespeichert …';
+  const response = await fetch('/api/settings', {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    $('settings-status').textContent = data.detail || 'Speichern fehlgeschlagen.';
+    notify($('settings-status').textContent, true);
+    return;
+  }
+  state.settings = data;
+  $('settings-status').textContent = 'Gespeichert. Gilt für neue Aufträge.';
+  setScriptCombobox(data.default_script);
+  notify('Einstellungen wurden gespeichert.');
+  loadSystemStatus();
+};
+
+$('pick-output').onclick = async () => {
+  const response = await fetch('/api/settings/output-folder', { method: 'POST' });
+  const data = await response.json();
+  if (data.path) $('setting-output').value = data.path;
+};
+
+async function loadKeyStatus(validate = false) {
+  $('key-status').textContent = validate ? 'Verbindung zu OpenRouter wird geprüft …' : 'Schlüsselbund wird geprüft …';
+  const response = await fetch(`/api/openrouter-key?validate=${validate}`);
+  const data = await response.json();
+  if (!response.ok) {
+    $('key-status').textContent = data.detail || 'Prüfung fehlgeschlagen.';
+    return;
+  }
+  $('key-status').textContent = data.configured
+    ? data.validated
+      ? `Schlüssel bestätigt${data.label ? ` · ${data.label}` : ''}${data.limit_remaining != null ? ` · Restlimit $${Number(data.limit_remaining).toFixed(2)}` : ''}.`
+      : 'API-Schlüssel ist sicher im macOS-Schlüsselbund gespeichert.'
+    : 'Kein OpenRouter-Schlüssel gespeichert.';
+}
+
+async function loadSystemStatus() {
+  const response = await fetch('/api/system');
+  if (!response.ok) return;
+  const data = await response.json();
+  $('local-badge').innerHTML = '<span></span> Lokal bereit · ' + esc(data.models_installed) + '/' + esc(data.models_total) + ' Modelle';
+  const rows = [
+    ['Archiv', `${data.documents} Dokumente · ${data.pages} Seiten · ${data.lines} Zeilen`],
+    ['Lokale Modelle', `${data.models_installed} von ${data.models_total} installiert`],
+    ['Tesseract', data.tesseract_available ? 'bereit' : 'nicht gefunden', !data.tesseract_available],
+    ['OpenRouter', data.openrouter_configured ? 'Schlüssel gespeichert' : 'nicht eingerichtet', !data.openrouter_configured],
+    ['Ausgabe', data.output],
+    ['Datenbank', data.database],
+    ['Version', data.version]
+  ];
+  $('system-status').innerHTML = rows.map(([label, value, warning]) =>
+    `<div class="system-row"><span>${esc(label)}</span><strong title="${esc(value)}">${warning !== undefined ? `<i class="status-dot ${warning ? 'warn' : ''}"></i>` : ''}${esc(value)}</strong></div>`
+  ).join('');
+}
+$('refresh-system').onclick = loadSystemStatus;
+
+async function initialize() {
+  renderSources();
+  await Promise.all([loadRecovery(), loadDocuments(), loadSettings(), loadCloudModels(), loadSystemStatus()]);
+  const initialTab = location.hash.slice(1);
+  if (['read', 'search', 'models', 'settings'].includes(initialTab)) openTab(initialTab);
+}
+initialize();

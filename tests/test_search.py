@@ -61,9 +61,7 @@ def stored_result() -> DocumentResult:
                 confidence=0.45,
                 model="test",
                 variant="original",
-                alternatives=[
-                    AlternativeReading(text="g", model="noise", confidence=0.2)
-                ],
+                alternatives=[AlternativeReading(text="g", model="noise", confidence=0.2)],
             ),
         ],
         mean_confidence=0.86,
@@ -107,9 +105,7 @@ def test_exact_fuzzy_and_correction_search(app_paths) -> None:
     assert old_reading and old_reading[0].text.startswith("Johann Schmid")
     assert old_reading[0].matched_form.startswith("Johann Schmidt wanderte")
 
-    typo_name = engine.search(
-        SearchQuery(text="Kreipig", mode=SearchMode.NAME, fuzziness=0.72)
-    )
+    typo_name = engine.search(SearchQuery(text="Kreipig", mode=SearchMode.NAME, fuzziness=0.72))
     assert typo_name and typo_name[0].line_id == "line-3"
     assert all(hit.line_id != "line-4" for hit in typo_name)
 
@@ -126,6 +122,13 @@ def test_semantic_mode_expands_transparent_archival_concepts(app_paths) -> None:
 
     assert hits and hits[0].line_id == "line-2"
     assert hits[0].reason == "verwandter Archivbegriff"
+
+    database.update_line("line-3", "Wilhelm Kreibig ist verstorben.")
+    death = ArchiveSearch(database).search(
+        SearchQuery(text="Sterbeurkunde", mode=SearchMode.SMART)
+    )
+    assert death and death[0].line_id == "line-3"
+    assert death[0].reason == "verwandter Archivbegriff"
 
 
 def test_reprocessing_document_removes_stale_fulltext_rows(app_paths) -> None:

@@ -57,6 +57,7 @@ mlx = [
 ]
 dev = [
   "mypy>=1.16,<2",
+  "playwright>=1.54,<2",
   "pytest>=9.0.3,<10",
   "pytest-cov>=6.2,<8",
   "ruff>=0.12,<1",

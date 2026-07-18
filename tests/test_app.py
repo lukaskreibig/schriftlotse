@@ -5,8 +5,10 @@ import time
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from schriftlotse.app import ApplicationState, JobRuntime, UIController, create_app
+from schriftlotse.config import AppPaths
 
 
 def test_visible_progress_status_contains_locality_and_percentage() -> None:
@@ -39,11 +41,51 @@ def test_runtime_progress_never_moves_backwards_and_has_eta() -> None:
 
 def test_local_health_probe() -> None:
     route = next(
-        route
-        for route in create_app().routes
-        if getattr(route, "path", "") == "/api/health"
+        route for route in create_app().routes if getattr(route, "path", "") == "/api/health"
     )
-    assert route.endpoint() == {"status": "bereit", "local": True, "version": "0.2.0"}
+    assert route.endpoint() == {
+        "status": "bereit",
+        "local": True,
+        "version": "0.2.0",
+        "instance_token": "browser",
+    }
+
+
+def test_settings_api_persists_visible_configuration(monkeypatch, app_paths) -> None:
+    monkeypatch.setattr(AppPaths, "default", classmethod(lambda _cls: app_paths))
+    client = TestClient(create_app())
+    payload = {
+        "advanced_models": False,
+        "semantic_search": False,
+        "cloud_budget_usd": 0.25,
+        "output_dir": str(app_paths.output / "custom"),
+        "tesseract_command": "tesseract",
+        "default_quality": "schnell",
+        "default_script": "druck",
+        "openrouter_profile": "balanced",
+        "show_preprocessing": False,
+    }
+
+    saved = client.put("/api/settings", json=payload)
+
+    assert saved.status_code == 200
+    assert client.get("/api/settings").json()["default_script"] == "druck"
+    assert (app_paths.output / "custom").is_dir()
+
+
+def test_upload_keeps_original_filename_for_document_title(monkeypatch, app_paths) -> None:
+    monkeypatch.setattr(AppPaths, "default", classmethod(lambda _cls: app_paths))
+    state = ApplicationState()
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/api/uploads",
+        files={"files": ("Hermann Sterbeurkunde.jpg", b"image", "image/jpeg")},
+    )
+
+    assert response.status_code == 200
+    token = response.json()["sources"][0]["id"]
+    assert state.authorized_sources[token].name == "Hermann Sterbeurkunde.jpg"
 
 
 def test_sources_and_downloads_use_opaque_capability_tokens(tmp_path) -> None:
