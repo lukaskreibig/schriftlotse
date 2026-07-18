@@ -17,6 +17,7 @@
     configuration.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
     self.webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     self.webView.navigationDelegate = self;
+    self.webView.allowsMagnification = NO;
 
     NSRect frame = NSMakeRect(0, 0, 1320, 860);
     NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -27,7 +28,9 @@
                                                 backing:NSBackingStoreBuffered
                                                   defer:NO];
     self.window.title = @"SchriftLotse";
-    self.window.minSize = NSMakeSize(900, 640);
+    // Below this size the three working areas would have to become a long
+    // scrolling web page. Keep the native app in its compact dashboard layout.
+    self.window.minSize = NSMakeSize(1100, 800);
     self.window.contentView = self.webView;
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];

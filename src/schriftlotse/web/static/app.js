@@ -12,6 +12,7 @@ function openTab(name) {
   document.querySelectorAll('.tabs button,.tab').forEach(node => node.classList.remove('active'));
   document.querySelector(`.tabs button[data-tab="${name}"]`).classList.add('active');
   $(name).classList.add('active');
+  if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   if (name === 'models') loadModels();
   if (name === 'search') loadDocuments();
 }
@@ -379,3 +380,5 @@ renderSources();
 loadRecovery();
 loadDocuments();
 loadCloudModels();
+const initialTab = location.hash.slice(1);
+if (['read', 'search', 'models'].includes(initialTab)) openTab(initialTab);

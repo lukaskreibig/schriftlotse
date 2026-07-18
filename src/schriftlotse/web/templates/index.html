@@ -20,7 +20,7 @@
 
   <main>
     <section id="read" class="tab active">
-      <div class="section-heading"><div><p class="eyebrow">Neuer Auftrag</p><h2>Dokumente entziffern</h2></div><p>Scans auswählen, Profil festlegen, lokal verarbeiten. Originale bleiben unverändert.</p></div>
+      <div class="section-heading"><div><p class="eyebrow">Neuer Auftrag</p><h2>Dokumente entziffern</h2></div><p>Quelle wählen, Qualität festlegen und lokal starten.</p></div>
       <div id="recovery" class="notice warning" hidden></div>
       <div class="setup-grid">
         <div class="card drop" id="dropzone">
@@ -38,15 +38,15 @@
             <legend>Verarbeitungsprofil</legend>
             <label class="profile-option">
               <input type="radio" name="quality" value="schnell">
-              <span><strong>Schnell</strong><small>Tesseract, Bildkorrektur und Suche. Ideal zum Vorsortieren.</small></span>
+              <span><strong>Schnell</strong><small>Für Sichtung und Druck – ohne große Handschriftmodelle.</small></span>
             </label>
             <label class="profile-option selected">
               <input type="radio" name="quality" value="beste_lokale_qualitaet" checked>
-              <span><strong>Beste lokale Qualität <em>Empfohlen</em></strong><small>CHURRO plus passendes TrOCR/Kraken und Vergleich aller Lesungen.</small></span>
+              <span><strong>Beste lokale Qualität <em>Empfohlen</em></strong><small>CHURRO liest die Seite; TrOCR und Kraken liefern Vergleichslesungen.</small></span>
             </label>
             <label class="profile-option">
               <input type="radio" name="quality" value="lizenzklar">
-              <span><strong>Nur lizenzklare Modelle</strong><small>Ohne CHURRO-Forschungsgewichte; gut für frei weitergebbare Abläufe.</small></span>
+              <span><strong>Nur lizenzklare Modelle</strong><small>Freie TrOCR-, Kraken- und Tesseract-Modelle ohne CHURRO.</small></span>
             </label>
           </fieldset>
           <div class="two-fields">
