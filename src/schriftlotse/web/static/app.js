@@ -559,7 +559,6 @@ $('pick-output').onclick = async () => {
     state.outputToken = data.token;
   }
 };
-$('setting-output').oninput = () => { state.outputToken = null; };
 
 async function loadKeyStatus(validate = false) {
   $('key-status').textContent = validate ? 'Verbindung zu OpenRouter wird geprüft …' : 'Schlüsselbund wird geprüft …';

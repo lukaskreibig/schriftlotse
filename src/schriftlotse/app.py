@@ -205,18 +205,14 @@ class ApplicationState:
     def resolve_output_directory(self, value: str, token: str | None) -> Path:
         with self.lock:
             authorized = self.authorized_output_dirs.get(token or "")
-        requested = Path(value).expanduser().resolve()
-        if authorized is not None and requested == authorized:
+        current = Settings.load(self.paths).output_dir
+        if authorized is not None and value == str(authorized):
             resolved = authorized
+        elif current is not None and value == current:
+            # The persisted setting is local trusted state, not an HTTP path.
+            resolved = Path(current).expanduser().resolve()
         else:
-            resolved = requested
-            home = Path.home().resolve()
-            current = Settings.load(self.paths).output_dir
-            current_path = Path(current).expanduser().resolve() if current else None
-            if not resolved.is_relative_to(home) and resolved != current_path:
-                raise ValueError(
-                    "Ordner außerhalb des Benutzerordners bitte über „Auswählen“ freigeben"
-                )
+            raise ValueError("Ausgabeordner bitte über „Auswählen“ freigeben")
         if not resolved.is_dir():
             raise ValueError("Ausgabeordner existiert nicht; bitte zuerst im Finder anlegen")
         if not os.access(resolved, os.W_OK):
