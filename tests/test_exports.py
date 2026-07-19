@@ -18,6 +18,7 @@ def test_all_document_exports_are_created(tmp_path) -> None:
     Image.new("RGB", (1000, 1200), "white").save(scan)
     result.document.source_paths = [scan]
     result.pages[0].source_path = scan
+    result.pages[0].prepared_path = tmp_path / "missing-prepared-page.png"
     files = export_document(result, tmp_path / "result")
     names = {path.name for path in files}
     assert {

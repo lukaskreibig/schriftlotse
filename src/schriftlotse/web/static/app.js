@@ -1,7 +1,11 @@
 const state = {
   sources: [], job: null, hits: [], selected: null, cloudModels: [], settings: null,
   outputToken: null, searchRequest: 0, hitRequest: 0, previewRequest: 0, jobEvents: null,
-  importDocuments: [], documentMetadata: {}
+  importDocuments: [], documentMetadata: {}, documents: [], collections: [],
+  importPreview: null, sourceFolders: [], selectedDocumentId: null, selectedPage: 0, completedJob: null,
+  archiveFilter: 'all', archiveGrid: true, migration: null, totalDocuments: 0,
+  archiveSort: 'recent',
+  savedSearches: (() => { try { const value = JSON.parse(localStorage.getItem('schriftlotse-saved-searches') || '[]'); return Array.isArray(value) ? value : []; } catch (_error) { return []; } })()
 };
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({
@@ -165,7 +169,7 @@ function basename(path) {
   return path.split('/').filter(Boolean).pop() || path;
 }
 
-function renderSources() {
+function renderSources(refreshPreview = true) {
   $('source-count').textContent = state.sources.length
     ? `${state.sources.length} ${state.sources.length === 1 ? 'Quelle' : 'Quellen'} ausgewählt`
     : 'Noch nichts ausgewählt';
@@ -179,7 +183,7 @@ function renderSources() {
       renderSources();
     };
   });
-  loadImportPreview();
+  if (refreshPreview) loadImportPreview();
 }
 
 async function loadImportPreview() {
@@ -200,10 +204,12 @@ async function loadImportPreview() {
     const data = await response.json();
     if (requestId !== state.previewRequest) return;
     state.importDocuments = data.documents || [];
+    state.importPreview = data;
     const series = data.series_suggestions?.length && !$('group-images').checked
       ? ` · ${data.series_suggestions.length} mögliche Bildserie${data.series_suggestions.length === 1 ? '' : 'n'}` : '';
     preview.classList.remove('is-error');
-    preview.innerHTML = `<span>${data.document_count} Dokument${data.document_count === 1 ? '' : 'e'} · ${data.page_count} Seite${data.page_count === 1 ? '' : 'n'}${esc(series)}</span><button type="button" id="review-import" class="text-button">Prüfen & Metadaten</button>`;
+    const reviewLabel = data.title_review_count ? `${data.title_review_count} Titel festlegen` : 'Ordnung & Metadaten prüfen';
+    preview.innerHTML = `<span>${data.document_count} Dokument${data.document_count === 1 ? '' : 'e'} · ${data.page_count} Seite${data.page_count === 1 ? '' : 'n'}${esc(series)}${data.folder_trees?.length ? ' · Ordnerstruktur wird übernommen' : ''}</span><button type="button" id="review-import" class="text-button">${esc(reviewLabel)}</button>`;
     $('review-import').onclick = openImportDialog;
   } catch (error) {
     if (requestId === state.previewRequest) {
@@ -220,13 +226,21 @@ function openImportDialog() {
   $('import-dialog-count').textContent = `${rows.length} Dokument${rows.length === 1 ? '' : 'e'}`;
   $('import-documents').innerHTML = rows.map(document => {
     const saved = state.documentMetadata[document.id] || {};
-    return `<tr data-document-id="${esc(document.id)}"><td><input class="doc-title" value="${esc(saved.title ?? document.title)}" aria-label="Titel ${esc(document.title)}"><small>${document.pages} Seite${document.pages === 1 ? '' : 'n'} · ${esc(document.files.join(', '))}</small></td><td><input class="doc-year" type="number" min="800" max="2100" value="${esc(saved.year ?? '')}" placeholder="auto" aria-label="Jahr ${esc(document.title)}"></td><td><select class="doc-script" aria-label="Schrift ${esc(document.title)}"><option value="auto">Automatisch</option><option value="handschrift">Handschrift</option><option value="druck">Druck</option><option value="schreibmaschine">Schreibmaschine</option></select></td></tr>`;
+    const suggested = document.title_needs_review ? `Dokument vom ${new Date().toLocaleDateString('de-DE')}` : document.title;
+    return `<tr data-document-id="${esc(document.id)}" class="${document.title_needs_review ? 'title-review-row' : ''}"><td><input class="doc-title" value="${esc(saved.title ?? suggested)}" aria-label="Titel ${esc(document.title)}"><small>${document.pages} Seite${document.pages === 1 ? '' : 'n'} · ${esc(document.files.join(', '))}</small>${document.collection_path?.length ? `<small class="collection-destination">→ ${esc(document.collection_path.join(' / '))}</small>` : ''}${document.title_needs_review ? '<small class="title-warning">Der übermittelte Dateiname war nur ein temporärer Systemname.</small>' : ''}</td><td><input class="doc-year" type="number" min="800" max="2100" value="${esc(saved.year ?? '')}" placeholder="auto" aria-label="Jahr ${esc(document.title)}"></td><td><select class="doc-script" aria-label="Schrift ${esc(document.title)}"><option value="auto">Automatisch</option><option value="handschrift">Handschrift</option><option value="druck">Druck</option><option value="schreibmaschine">Schreibmaschine</option></select></td></tr>`;
   }).join('');
+  const trees = state.importPreview?.folder_trees || [];
+  $('import-tree-summary').hidden = !trees.length;
+  $('import-tree-summary').innerHTML = trees.length ? `<strong>Diese Ordnerstruktur wird als Sammlung übernommen</strong>${trees.map(renderImportTree).join('')}` : '';
   rows.forEach(document => {
     const row = [...$('import-documents').querySelectorAll('tr')].find(item => item.dataset.documentId === document.id);
     if (row) row.querySelector('.doc-script').value = state.documentMetadata[document.id]?.script_hint || 'auto';
   });
   $('import-dialog').showModal();
+}
+
+function renderImportTree(node) {
+  return `<div class="import-tree-node"><span>▣ ${esc(node.name)} <small>${node.document_count || 0} Dokumente · ${node.file_count || 0} Dateien</small></span>${(node.children || []).length ? `<div>${node.children.map(renderImportTree).join('')}</div>` : ''}</div>`;
 }
 
 $('import-dialog').onclose = () => {
@@ -298,7 +312,28 @@ async function upload(files, button = null) {
   }
 }
 
-$('choose-files').onclick = () => $('files').click();
+let nativePickerAction = null;
+window.schriftlotseNativePicked = async paths => {
+  if (!paths?.length) return;
+  const action = nativePickerAction;
+  const button = action === 'folder' ? $('folder') : $('choose-files');
+  await withButtonBusy(button, 'Auswahl wird übernommen …', async () => {
+    const response = await fetch('/api/native-sources', { method: 'POST', headers: { 'content-type': 'application/json', 'x-schriftlotse-instance': window.__schriftlotseNativeToken || '' }, body: JSON.stringify({ paths }) });
+    if (!response.ok) throw new Error(await responseError(response, 'Native Auswahl konnte nicht übernommen werden.'));
+    const data = await response.json();
+    state.sources.push(...data.sources.filter(source => !state.sources.some(item => item.id === source.id)));
+    renderSources(false); await loadImportPreview();
+    if (action === 'folder') openImportDialog();
+    notify(action === 'folder' ? 'Archivordner wurde übernommen.' : `${data.sources.length} Datei${data.sources.length === 1 ? '' : 'en'} ausgewählt.`);
+  }).catch(error => notify(error.message, true));
+};
+
+$('choose-files').onclick = () => {
+  if (window.webkit?.messageHandlers?.schriftlotsePicker) {
+    nativePickerAction = 'files';
+    window.webkit.messageHandlers.schriftlotsePicker.postMessage({ action: 'files' });
+  } else $('files').click();
+};
 $('files').onchange = event => {
   upload(event.target.files, $('choose-files'))
     .then(() => { event.target.value = ''; notify('Dateien wurden hinzugefügt.'); })
@@ -318,6 +353,11 @@ dropzone.addEventListener('drop', event => upload(event.dataTransfer.files)
   .catch(error => notify(error.message, true)));
 
 $('folder').onclick = async () => {
+  if (window.webkit?.messageHandlers?.schriftlotsePicker) {
+    nativePickerAction = 'folder';
+    window.webkit.messageHandlers.schriftlotsePicker.postMessage({ action: 'folder' });
+    return;
+  }
   await withButtonBusy($('folder'), 'Ordnerdialog geöffnet …', async () => {
     setInlineStatus($('drop-status'), 'Ordner wird ausgewählt und geprüft …', { busy: true });
     try {
@@ -326,7 +366,9 @@ $('folder').onclick = async () => {
       if (!response.ok) throw new Error(data.detail || 'Ordnerauswahl fehlgeschlagen.');
       if (data.source && !state.sources.some(item => item.id === data.source.id)) {
         state.sources.push(data.source);
-        renderSources();
+        renderSources(false);
+        await loadImportPreview();
+        openImportDialog();
         notify('Ordner wurde hinzugefügt.');
       }
     } catch (error) {
@@ -339,6 +381,12 @@ $('folder').onclick = async () => {
 
 $('start').onclick = async () => {
   if (!state.sources.length) { notify('Bitte zuerst Dateien oder einen Ordner auswählen.', true); return; }
+  const unresolvedTitles = state.importDocuments.filter(document => document.title_needs_review && !state.documentMetadata[document.id]?.title);
+  if (unresolvedTitles.length) {
+    openImportDialog();
+    notify('Bitte den temporären Dateinamen vor dem Start durch einen verständlichen Titel ersetzen.', true);
+    return;
+  }
   const quality = document.querySelector('input[name="quality"]:checked').value;
   const cloud = quality === 'beste_qualitaet';
   const cloudOption = state.cloudModels.find(model => model.key === $('job-cloud-model').value);
@@ -359,7 +407,8 @@ $('start').onclick = async () => {
     cloud_budget_usd: cloud ? Number($('job-cloud-budget').value) : 0,
     cloud_model_profile: $('job-cloud-model').value || 'quality',
     group_images_by_folder: $('group-images').checked,
-    document_metadata: state.documentMetadata
+    document_metadata: state.documentMetadata,
+    preserve_folder_structure: true
   };
   await withButtonBusy($('start'), 'Auftrag wird vorbereitet …', async () => {
     $('status-message').textContent = 'Auftrag wird vorbereitet …';
@@ -374,6 +423,11 @@ $('start').onclick = async () => {
       state.job = data.id;
       $('cancel').hidden = false;
       $('exports').innerHTML = '';
+      $('job-summary').innerHTML = '';
+      $('job-log').innerHTML = '<div class="event-empty">Der Auftrag wird vorbereitet …</div>';
+      $('processing-log-count').textContent = '0 Schritte';
+      $('live-preview').hidden = true;
+      $('live-stage').textContent = '';
       watchJob(data.id);
     } catch (error) {
       $('status').classList.remove('is-loading');
@@ -392,19 +446,38 @@ function duration(seconds) {
   return hours ? `${hours} h ${minutes} min` : `${minutes} min`;
 }
 
+function renderJobEvents(job) {
+  const events = job.events || [];
+  $('processing-log-count').textContent = `${events.length} Schritt${events.length === 1 ? '' : 'e'}`;
+  if (!events.length) return;
+  $('job-log').innerHTML = events.map((event, index) => {
+    const evidence = [...(event.evidence || []), ...(event.period?.evidence || [])];
+    const engines = event.engines || [];
+    const details = [
+      event.reason ? `<p><strong>Entscheidung:</strong> ${esc(event.reason)}</p>` : '',
+      evidence.length ? `<p><strong>Indizien:</strong> ${esc(evidence.join(' · '))}</p>` : '',
+      engines.length ? `<div class="event-engines">${engines.map(run => `<span class="${run.success ? '' : 'failed'}"><strong>${esc(run.engine)}</strong> · ${esc(run.backend)} · ${Number(run.duration_seconds || 0).toFixed(1)} s${run.success ? '' : ` · ${esc(run.message || 'fehlgeschlagen')}`}</span>`).join('')}</div>` : ''
+    ].join('');
+    const label = event.stage || event.type || 'fortschritt';
+    return `<article class="event-row ${index === events.length - 1 ? 'current' : ''}"><i aria-hidden="true"></i><div><header><strong>${esc(event.message || label)}</strong><span>${Math.round(Number(event.progress || 0) * 100)} %</span></header><small>${esc(label)}${event.model ? ` · ${esc(event.model)}` : ''}${event.script ? ` · ${esc(event.script)}` : ''}</small>${details}</div></article>`;
+  }).join('');
+  $('job-log').scrollTop = $('job-log').scrollHeight;
+}
+
 function watchJob(id) {
   if (state.jobEvents) state.jobEvents.close();
   const events = new EventSource(`/api/jobs/${id}/events`);
   state.jobEvents = events;
   $('status').classList.add('is-loading');
   $('status').setAttribute('aria-busy', 'true');
-  events.onmessage = event => {
+  events.onmessage = async event => {
     const job = JSON.parse(event.data);
     $('status-message').textContent = job.message;
     const eta = job.estimated_remaining_seconds == null ? '' : ` · ca. ${duration(job.estimated_remaining_seconds)} verbleibend`;
     $('status-meta').textContent = `${job.percent} % · ${duration(job.elapsed_seconds)}${eta}`;
     $('progress').value = job.percent;
-    $('job-log').textContent = (job.history || []).join('\n');
+    renderJobEvents(job);
+    renderLiveJob(job);
     $('status').classList.toggle('failed', job.status === 'fehlgeschlagen');
     if (['fertig', 'fehlgeschlagen', 'abgebrochen'].includes(job.status)) {
       events.close();
@@ -413,12 +486,47 @@ function watchJob(id) {
       $('status').removeAttribute('aria-busy');
       $('cancel').hidden = true;
       renderExports(job.exports || []);
-      if (job.status === 'fertig') loadDocuments();
+      renderJobSummary(job);
+      if (job.status === 'fertig' && state.completedJob !== job.id) {
+        state.completedJob = job.id;
+        await loadDocuments();
+        if ((job.document_ids || []).length === 1) {
+          openTab('search');
+          await showDocument(job.document_ids[0]);
+          notify('Entzifferung abgeschlossen – die Transkription ist geöffnet.');
+        } else if ((job.document_ids || []).length > 1) {
+          openTab('search');
+          const first = state.documents.find(document => document.id === job.document_ids[0]);
+          if (first?.collection_ids?.length) state.archiveFilter = `collection:${first.collection_ids[0]}`;
+          renderDocumentBrowser();
+          notify(`${job.document_ids.length} Dokumente sind fertig und in der Bibliothek abgelegt.`);
+        }
+      }
     }
   };
   events.onerror = () => {
     $('status-message').textContent = 'Statusverbindung wird wiederhergestellt …';
   };
+}
+
+function renderLiveJob(job) {
+  const live = job.live || {};
+  if (!live.preview_url) return;
+  $('live-preview').hidden = false;
+  const image = $('live-image');
+  const nextSource = `${live.preview_url}?v=${encodeURIComponent(live.stage || '')}`;
+  if (image.dataset.source !== nextSource) { image.dataset.source = nextSource; image.src = nextSource; }
+  $('live-stage').textContent = [live.document_title, live.page_number ? `Seite ${live.page_number}${live.page_count ? `/${live.page_count}` : ''}` : '', live.stage, live.model].filter(Boolean).join(' · ');
+  const overlay = $('live-overlay');
+  const width = Number(live.width || 1), height = Number(live.height || 1);
+  overlay.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  overlay.innerHTML = (live.boxes || []).map(box => `<rect x="${Number(box[0])}" y="${Number(box[1])}" width="${Math.max(1, Number(box[2]) - Number(box[0]))}" height="${Math.max(1, Number(box[3]) - Number(box[1]))}"/>`).join('');
+}
+
+function renderJobSummary(job) {
+  const summary = job.summary || {};
+  if (job.status !== 'fertig' || !summary.documents) { $('job-summary').innerHTML = ''; return; }
+  $('job-summary').innerHTML = `<div class="completion-summary"><div><span>Dokumente</span><strong>${summary.documents}</strong></div><div><span>Seiten</span><strong>${summary.pages || 0}</strong></div><div><span>Offene Stellen</span><strong>${summary.uncertain || 0}</strong></div><div><span>Modelle</span><strong>${esc((summary.models || []).join(', ') || '–')}</strong></div></div>`;
 }
 
 $('cancel').onclick = async () => {
@@ -446,24 +554,600 @@ function renderExports(downloads) {
 async function loadDocuments() {
   const summary = $('archive-summary');
   summary.setAttribute('aria-busy', 'true');
-  if (!summary.querySelector('.document-chip:not(.loading-chip)')) {
-    summary.innerHTML = '<span class="document-chip loading-chip"><span class="spinner" aria-hidden="true"></span> Archiv wird geladen …</span>';
-  }
+  $('document-browser').innerHTML = loadingMarkup('Dokumente und Sammlungen werden geladen …');
   try {
-    const response = await fetch('/api/documents');
-    if (!response.ok) throw new Error(await responseError(response, 'Archiv konnte nicht geladen werden.'));
-    const documents = await response.json();
-    summary.innerHTML = documents.length
-      ? `<span class="document-chip"><strong>${documents.length}</strong> Dokument${documents.length === 1 ? '' : 'e'} im lokalen Archiv</span>` + documents.slice(0, 8).map(document =>
-        `<span class="document-chip">${esc(document.title)}${document.year ? ` · ${document.year}` : ''}</span>`
-      ).join('')
-      : '<span class="document-chip">Noch keine Dokumente verarbeitet</span>';
+    const [documentsResponse, collectionsResponse, migrationResponse, sourceFoldersResponse] = await Promise.all([
+      fetch('/api/documents'), fetch('/api/collections'), fetch('/api/library/migration-preview'), fetch('/api/source-folders')
+    ]);
+    if (!documentsResponse.ok) throw new Error(await responseError(documentsResponse, 'Archiv konnte nicht geladen werden.'));
+    state.documents = await documentsResponse.json();
+    state.totalDocuments = Number(documentsResponse.headers.get('X-Total-Count') || state.documents.length);
+    state.collections = collectionsResponse.ok ? await collectionsResponse.json() : [];
+    state.migration = migrationResponse.ok ? await migrationResponse.json() : null;
+    state.sourceFolders = sourceFoldersResponse.ok ? await sourceFoldersResponse.json() : [];
+    renderCollections();
+    renderSourceFolders();
+    renderDocumentBrowser();
+    renderMigrationNotice();
   } catch (error) {
     summary.innerHTML = `<span class="document-chip error-chip">${esc(error.message)}</span>`;
+    $('document-browser').innerHTML = `<div class="loading-state is-error">${esc(error.message)}</div>`;
   } finally {
     summary.removeAttribute('aria-busy');
   }
 }
+
+function filteredDocuments() {
+  let documents = state.documents;
+  if (state.archiveFilter === 'eingang') documents = documents.filter(item => !(item.collection_names || []).length);
+  if (state.archiveFilter === 'processing') documents = documents.filter(item => item.document_status === 'in_verarbeitung' || item.document_status === 'fehlgeschlagen');
+  if (state.archiveFilter === 'unsicher') documents = documents.filter(item => Number(item.uncertain_count || 0) > 0);
+  if (state.archiveFilter === 'verified') documents = documents.filter(item => ['bestaetigt', 'ground_truth'].includes(item.document_status));
+  if (state.archiveFilter.startsWith('archive:')) {
+    const name = state.archiveFilter.slice('archive:'.length);
+    documents = documents.filter(item => item.archive === name);
+  }
+  if (state.archiveFilter.startsWith('collection:')) {
+    const id = state.archiveFilter.slice('collection:'.length);
+    const descendants = new Set([id, ...collectionDescendants(id)]);
+    documents = documents.filter(item => (item.collection_ids || []).some(collectionId => descendants.has(collectionId)));
+  }
+  const sorted = [...documents];
+  if (state.archiveSort === 'title') sorted.sort((a, b) => a.title.localeCompare(b.title, 'de'));
+  if (state.archiveSort === 'year-asc') sorted.sort((a, b) => Number(a.year || 9999) - Number(b.year || 9999));
+  if (state.archiveSort === 'year-desc') sorted.sort((a, b) => Number(b.year || 0) - Number(a.year || 0));
+  if (state.archiveSort === 'archive') sorted.sort((a, b) => String(a.archive || '').localeCompare(String(b.archive || ''), 'de') || a.title.localeCompare(b.title, 'de'));
+  return sorted;
+}
+
+function renderDocumentBrowser() {
+  const documents = filteredDocuments();
+  $('document-browser').classList.toggle('list-view', !state.archiveGrid);
+  $('document-browser').hidden = false;
+  $('search-results-view').hidden = true;
+  $('show-library').classList.add('active');
+  $('results-title').textContent = state.archiveFilter.startsWith('collection:')
+    ? (state.collections.find(item => item.id === state.archiveFilter.slice('collection:'.length))?.path || 'Sammlung')
+    : state.archiveFilter.startsWith('archive:')
+    ? state.archiveFilter.slice('archive:'.length)
+    : ({ all: 'Alle Dokumente', eingang: 'Eingang', processing: 'In Verarbeitung', unsicher: 'Prüfung erforderlich', verified: 'Verifiziert', dateiprobleme: 'Dateiprobleme', papierkorb: 'Papierkorb' }[state.archiveFilter] || 'Dokumente');
+  $('result-count').textContent = String(documents.length);
+  $('count-all').textContent = String(state.totalDocuments || state.documents.length);
+  $('count-inbox').textContent = String(state.documents.filter(item => !(item.collection_names || []).length).length);
+  $('count-review').textContent = String(state.documents.filter(item => Number(item.uncertain_count || 0) > 0).length);
+  $('archive-summary').innerHTML = `<span class="document-chip"><strong>${documents.length}</strong>${state.totalDocuments > state.documents.length && state.archiveFilter === 'all' ? ` von ${state.totalDocuments}` : ''} Dokument${documents.length === 1 ? '' : 'e'}</span><span class="document-chip">${state.documents.filter(item => item.managed).length} sicher verwaltet</span>`;
+  setInlineStatus($('search-status'), documents.length ? 'Dokument auswählen oder Archiv durchsuchen' : 'Diese Ansicht enthält noch keine Dokumente.');
+  if (!documents.length) {
+    $('document-browser').innerHTML = '<div class="empty-state"><span class="empty-symbol">▧</span><h3>Noch keine Dokumente hier</h3><p>Neue Scans landen zunächst im Eingang.</p></div>';
+    return;
+  }
+  $('document-browser').innerHTML = documents.map(document => {
+    const confidence = document.mean_confidence == null ? null : Math.round(Number(document.mean_confidence) * 100);
+    const status = document.document_status === 'in_verarbeitung' ? 'wird verarbeitet' : document.document_status === 'fehlgeschlagen' ? 'Verarbeitung fehlgeschlagen' : Number(document.uncertain_count || 0) ? `${document.uncertain_count} offen` : 'keine offenen Stellen';
+    return `<button class="document-card" data-document-id="${esc(document.id)}">
+      <span class="document-thumb"><img src="${esc(document.thumbnail_url)}" alt="" loading="lazy"><i class="storage-state ${document.managed ? 'managed' : 'referenced'}" title="${document.managed ? 'Original sicher verwaltet' : 'Noch nur referenziert'}"></i></span>
+      <span class="document-card-copy"><strong>${esc(document.title)}</strong><small>${esc((document.collection_paths || []).join(' · ') || 'Eingang · noch nicht abgelegt')}</small><span>${document.year || 'ohne Jahr'} · ${document.page_count || 0} Seite${Number(document.page_count) === 1 ? '' : 'n'}${confidence == null ? '' : ` · ${confidence} %`}</span>${document.title_needs_review ? '<em class="needs-review">Titel prüfen</em>' : `<em class="${Number(document.uncertain_count || 0) || document.document_status === 'fehlgeschlagen' ? 'needs-review' : ''}">${esc(status)}</em>`}</span>
+    </button>`;
+  }).join('');
+  if (state.archiveFilter === 'all' && state.documents.length < state.totalDocuments) {
+    $('document-browser').insertAdjacentHTML('beforeend', `<button id="load-more-documents" class="load-more">Weitere Dokumente laden · ${state.totalDocuments - state.documents.length} verbleibend</button>`);
+    $('load-more-documents').onclick = loadMoreDocuments;
+  }
+  $('document-browser').querySelectorAll('.document-card').forEach(button => {
+    button.onclick = () => showDocument(button.dataset.documentId);
+  });
+}
+
+async function loadMoreDocuments() {
+  const button = $('load-more-documents');
+  await withButtonBusy(button, 'Weitere Dokumente werden geladen …', async () => {
+    const response = await fetch(`/api/documents?limit=500&offset=${state.documents.length}`);
+    if (!response.ok) throw new Error(await responseError(response, 'Weitere Dokumente konnten nicht geladen werden.'));
+    const next = await response.json();
+    state.documents.push(...next);
+    state.totalDocuments = Number(response.headers.get('X-Total-Count') || state.totalDocuments);
+    renderDocumentBrowser();
+  }).catch(error => notify(error.message, true));
+}
+
+function collectionDescendants(collectionId) {
+  const children = state.collections.filter(item => item.parent_id === collectionId);
+  return children.flatMap(item => [item.id, ...collectionDescendants(item.id)]);
+}
+
+function renderCollections() {
+  $('collection-list').innerHTML = state.collections.length ? state.collections.map(collection =>
+    `<div class="collection-row" style="--collection-depth:${Number(collection.depth || 0)}"><button data-collection="${esc(collection.id)}" title="${esc(collection.path)}"><span>${collection.kind === 'quellordner' ? '▣ ' : ''}${esc(collection.name)}</span><b>${collection.descendant_document_count || 0}</b></button><button data-edit-collection="${esc(collection.id)}" aria-label="${esc(collection.name)} bearbeiten">•••</button></div>`
+  ).join('') : '<p class="side-empty">Noch keine eigenen Sammlungen</p>';
+  $('collection-list').querySelectorAll('button').forEach(button => {
+    if (button.dataset.editCollection) return;
+    button.onclick = () => {
+      state.archiveFilter = `collection:${button.dataset.collection}`;
+      document.querySelectorAll('#archive-navigation button,.collection-list button').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+      renderDocumentBrowser();
+    };
+  });
+  $('collection-list').querySelectorAll('[data-edit-collection]').forEach(button => button.onclick = event => { event.stopPropagation(); openCollectionDialog(button.dataset.editCollection); });
+  const archives = [...new Set(state.documents.map(item => item.archive).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'de'));
+  $('archive-list').innerHTML = archives.length ? archives.map(name => `<button data-archive="${esc(name)}"><span>${esc(name)}</span><b>${state.documents.filter(item => item.archive === name).length}</b></button>`).join('') : '<p class="side-empty">Noch keine Archivangaben</p>';
+  $('archive-list').querySelectorAll('button').forEach(button => button.onclick = () => {
+    state.archiveFilter = `archive:${button.dataset.archive}`;
+    document.querySelectorAll('#archive-navigation button,.collection-list button').forEach(item => item.classList.remove('active'));
+    button.classList.add('active'); renderDocumentBrowser();
+  });
+  renderSavedSearches();
+}
+
+function renderSourceFolders() {
+  $('source-folder-list').innerHTML = state.sourceFolders.length ? state.sourceFolders.map(source =>
+    `<button data-source-folder="${esc(source.id)}" title="${esc(source.root_path)}"><span>${source.reachable ? '↻' : '⚠'} ${esc(source.label)}</span><b>${source.file_count || 0}</b></button>`
+  ).join('') : '<p class="side-empty">Noch kein Ordner verknüpft</p>';
+  $('source-folder-list').querySelectorAll('[data-source-folder]').forEach(button => {
+    button.onclick = () => openSourceSync(button.dataset.sourceFolder, button);
+  });
+}
+
+async function openSourceSync(sourceId, button = null) {
+  state.syncSourceId = sourceId;
+  $('source-sync-title').textContent = 'Ordneränderungen werden geprüft …';
+  $('source-sync-count').textContent = '';
+  $('source-sync-content').innerHTML = loadingMarkup('Prüfsummen und Ordnerstruktur werden verglichen …');
+  $('source-sync-dialog').showModal();
+  setButtonBusy(button, true, 'Prüft …');
+  try {
+    const response = await fetch(`/api/source-folders/${encodeURIComponent(sourceId)}/diff`);
+    if (!response.ok) throw new Error(await responseError(response, 'Ordner konnte nicht geprüft werden.'));
+    const data = await response.json();
+    $('source-sync-title').textContent = data.reachable ? `${data.label} abgleichen` : `${data.label} ist nicht erreichbar`;
+    $('source-sync-count').textContent = data.reachable ? `${data.changes.length} Änderung${data.changes.length === 1 ? '' : 'en'}` : 'offline';
+    const labels = { new: 'Neu', changed: 'Geändert', moved: 'Verschoben', missing: 'Quelle fehlt' };
+    $('source-sync-content').innerHTML = !data.reachable
+      ? '<div class="empty-state"><h3>Ordner nicht gefunden</h3><p>Die verwalteten Originale und Transkriptionen bleiben sicher erhalten.</p></div>'
+      : data.changes.length
+      ? data.changes.map(change => `<label class="sync-change ${esc(change.kind)}"><input type="checkbox" value="${esc(change.relative_path)}" ${['new','changed','moved'].includes(change.kind) ? 'checked' : 'disabled'}><span><strong>${esc(labels[change.kind] || change.kind)}</strong>${esc(change.relative_path)}${change.previous_path ? `<small>vorher: ${esc(change.previous_path)} · wird ohne neue OCR umgeordnet</small>` : ''}${change.kind === 'missing' ? '<small>Das verwaltete Dokument wird nicht gelöscht.</small>' : ''}</span></label>`).join('')
+      : '<div class="empty-state compact"><h3>Alles aktuell</h3><p>Keine neuen oder geänderten Dateien gefunden.</p></div>';
+    $('prepare-source-sync').disabled = !data.changes.some(change => ['new', 'changed', 'moved'].includes(change.kind));
+  } catch (error) {
+    $('source-sync-content').innerHTML = `<div class="loading-state is-error">${esc(error.message)}</div>`;
+    $('prepare-source-sync').disabled = true;
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+$('source-sync-dialog').addEventListener('close', async () => {
+  if ($('source-sync-dialog').returnValue !== 'confirm' || !state.syncSourceId) return;
+  const paths = [...$('source-sync-content').querySelectorAll('input:checked')].map(input => input.value);
+  const response = await fetch(`/api/source-folders/${encodeURIComponent(state.syncSourceId)}/prepare-sync`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ relative_paths: paths }) });
+  if (!response.ok) return notify(await responseError(response, 'Änderungen konnten nicht vorbereitet werden.'), true);
+  const data = await response.json();
+  state.sources = data.sources || [];
+  if (state.sources.length) { openTab('read'); renderSources(); }
+  else await loadDocuments();
+  notify(`${state.sources.length} Datei${state.sources.length === 1 ? '' : 'en'} zur Verarbeitung, ${data.moved || 0} ohne neue OCR umgeordnet.`);
+});
+
+function renderSavedSearches() {
+  $('saved-search-list').innerHTML = state.savedSearches.length ? state.savedSearches.map((item, index) => `<div class="saved-search"><button data-saved-search="${index}" title="${esc(item.text)}">${esc(item.text)}</button><button data-remove-search="${index}" aria-label="Gespeicherte Suche entfernen">×</button></div>`).join('') : '<p class="side-empty">Noch keine gespeicherten Suchen</p>';
+  $('saved-search-list').querySelectorAll('[data-saved-search]').forEach(button => button.onclick = () => {
+    const item = state.savedSearches[Number(button.dataset.savedSearch)];
+    $('query').value = item.text; $('search-mode').value = item.mode; $('year-from').value = item.yearFrom || ''; $('year-to').value = item.yearTo || ''; $('fuzziness').value = item.fuzziness; $('fuzziness-value').textContent = `${item.fuzziness} %`; runSearch();
+  });
+  $('saved-search-list').querySelectorAll('[data-remove-search]').forEach(button => button.onclick = event => {
+    event.stopPropagation(); state.savedSearches.splice(Number(button.dataset.removeSearch), 1); localStorage.setItem('schriftlotse-saved-searches', JSON.stringify(state.savedSearches)); renderSavedSearches();
+  });
+}
+
+$('save-search').onclick = () => {
+  const text = $('query').value.trim();
+  if (!text) return notify('Zuerst einen Suchbegriff eingeben.', true);
+  const saved = { text, mode: $('search-mode').value, yearFrom: $('year-from').value, yearTo: $('year-to').value, fuzziness: Number($('fuzziness').value) };
+  state.savedSearches = state.savedSearches.filter(item => item.text !== text || item.mode !== saved.mode);
+  state.savedSearches.unshift(saved); state.savedSearches = state.savedSearches.slice(0, 20);
+  localStorage.setItem('schriftlotse-saved-searches', JSON.stringify(state.savedSearches)); renderSavedSearches(); notify('Suche gespeichert.');
+};
+
+document.querySelectorAll('#archive-navigation button').forEach(button => {
+  button.onclick = async () => {
+    state.archiveFilter = button.dataset.filter;
+    document.querySelectorAll('#archive-navigation button,.collection-list button').forEach(item => item.classList.remove('active'));
+    button.classList.add('active');
+    if (state.archiveFilter === 'jobs') {
+      await renderJobHistory();
+      return;
+    }
+    if (state.archiveFilter === 'dateiprobleme') {
+      setInlineStatus($('search-status'), 'Letzte Integritätsprüfungen werden geladen …', { busy: true });
+      const response = await fetch('/api/documents?status=dateiprobleme');
+      const problems = response.ok ? await response.json() : [];
+      const original = state.documents;
+      state.documents = problems;
+      renderDocumentBrowser();
+      state.documents = original;
+      return;
+    }
+    if (state.archiveFilter === 'papierkorb') {
+      setInlineStatus($('search-status'), 'Papierkorb wird geladen …', { busy: true });
+      const response = await fetch('/api/documents?status=papierkorb');
+      const deleted = response.ok ? await response.json() : [];
+      const original = state.documents;
+      state.documents = deleted;
+      renderDocumentBrowser();
+      state.documents = original;
+      return;
+    }
+    renderDocumentBrowser();
+  };
+});
+
+async function renderJobHistory() {
+  $('document-browser').hidden = false;
+  $('search-results-view').hidden = true;
+  $('results-title').textContent = 'Verarbeitungsläufe';
+  $('document-browser').innerHTML = loadingMarkup('Laufprotokolle werden geladen …');
+  const response = await fetch('/api/job-history?limit=100');
+  if (!response.ok) {
+    $('document-browser').innerHTML = '<div class="loading-state is-error">Laufprotokolle konnten nicht geladen werden.</div>';
+    return;
+  }
+  const jobs = await response.json();
+  $('result-count').textContent = String(jobs.length);
+  $('archive-summary').innerHTML = '<span class="document-chip">Dauerhaft gespeicherte Aufträge</span>';
+  setInlineStatus($('search-status'), jobs.length ? 'Neueste Läufe zuerst' : 'Noch keine Verarbeitungsläufe');
+  $('document-browser').innerHTML = jobs.length ? jobs.map(job => `<div class="job-card"><span class="job-state ${job.status}"></span><div><strong>${esc(job.message || 'Verarbeitungsauftrag')}</strong><small>${esc(job.updated_at)} · ${job.document_count || 0} Dokumente · ${job.page_count || 0} Seiten</small><span>${esc(job.status)}${Number(job.cloud_cost || 0) ? ` · Cloud $${Number(job.cloud_cost).toFixed(4)}` : ''}</span></div></div>`).join('') : '<div class="empty-state">Noch keine Verarbeitungsläufe gespeichert.</div>';
+}
+
+$('show-library').onclick = () => {
+  state.archiveFilter = 'all';
+  document.querySelectorAll('#archive-navigation button,.collection-list button').forEach(item => item.classList.remove('active'));
+  document.querySelector('#archive-navigation [data-filter="all"]').classList.add('active');
+  renderDocumentBrowser();
+};
+$('archive-grid-toggle').onclick = () => {
+  state.archiveGrid = !state.archiveGrid;
+  $('archive-grid-toggle').textContent = state.archiveGrid ? '▦' : '☷';
+  renderDocumentBrowser();
+};
+$('archive-sort').onchange = () => { state.archiveSort = $('archive-sort').value; renderDocumentBrowser(); };
+
+async function showDocumentLegacy(documentId) {
+  $('viewer-empty').hidden = true;
+  $('viewer-content').hidden = true;
+  $('document-detail').hidden = false;
+  $('document-detail').innerHTML = loadingMarkup('Dokument und technischer Bericht werden geladen …');
+  let document;
+  try {
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}`);
+    if (!response.ok) throw new Error(await responseError(response, 'Dokument konnte nicht geladen werden.'));
+    document = await response.json();
+  } catch (error) {
+    $('document-detail').innerHTML = `<div class="loading-state is-error">${esc(error.message)}</div>`;
+    return;
+  }
+  const pages = document.pages || [];
+  const selectedCollections = new Set((document.collections || []).map(item => item.id));
+  const diagnostics = pages[0] || {};
+  $('document-detail').innerHTML = `
+    <div class="detail-hero"><img src="${esc(document.thumbnail_url)}" alt="Vorschau"><div><p class="eyebrow">Dokument</p><h3>${esc(document.title)}</h3><p>${esc([document.archive, document.fonds, document.shelfmark].filter(Boolean).join(' · ') || 'Noch ohne Archivangaben')}</p><span class="managed-badge ${document.library_managed ? '' : 'warning'}">${document.library_managed ? '✓ Original sicher verwaltet' : 'Nur Quelldatei referenziert'}</span></div></div>
+    <div class="page-filmstrip">${pages.map(page => `<button data-page="${page.page_index}" title="Seite ${Number(page.page_index) + 1}"><img src="${esc(page.thumbnail_url)}" alt="Seite ${Number(page.page_index) + 1}" loading="lazy"><span>${Number(page.page_index) + 1}</span></button>`).join('')}</div>
+    ${pages.length ? `<div class="detail-page-preview"><img id="detail-page-image" src="${esc(pages[0].image_url)}" alt="Ausgewählte Dokumentseite"></div>` : ''}
+    <details open><summary>Archivangaben</summary><div class="metadata-grid">
+      <label class="wide">Titel<input data-meta="title" value="${esc(document.title)}"></label>
+      <label>Jahr<input data-meta="year" type="number" min="800" max="2100" value="${document.year || ''}"></label><label>Archiv<input data-meta="archive" value="${esc(document.archive || '')}"></label>
+      <label>Status<select data-document-status><option value="automatisch" ${document.document_status === 'automatisch' ? 'selected' : ''}>Automatisch erkannt</option><option value="in_pruefung" ${['in_pruefung','in_verarbeitung','fehlgeschlagen'].includes(document.document_status) ? 'selected' : ''}>In Prüfung</option><option value="bestaetigt" ${document.document_status === 'bestaetigt' ? 'selected' : ''}>Geprüft</option><option value="ground_truth" ${document.document_status === 'ground_truth' ? 'selected' : ''}>Ground Truth</option></select></label><span></span>
+      <label>Bestand<input data-meta="fonds" value="${esc(document.fonds || '')}"></label><label>Signatur<input data-meta="shelfmark" value="${esc(document.shelfmark || '')}"></label>
+      <label>Serie<input data-meta="series" value="${esc(document.series || '')}"></label><label>Ort<input data-meta="place" value="${esc(document.place || '')}"></label>
+      <label>Urheber / Schreiber<input data-meta="creator" value="${esc(document.creator || '')}"></label><label>Externe Kennung<input data-meta="external_id" value="${esc(document.external_id || '')}"></label>
+      <label>Datierung von<input data-meta="date_from" type="number" min="800" max="2100" value="${document.date_from || ''}"></label><label>Datierung bis<input data-meta="date_to" type="number" min="800" max="2100" value="${document.date_to || ''}"></label>
+      <label class="wide">Tags <small>mit Komma trennen</small><input data-tags value="${esc((document.tags || []).join(', '))}"></label>
+      <label class="wide">Quelllink<input data-meta="source_url" value="${esc(document.source_url || '')}"></label>
+      <label class="wide">Beschreibung<textarea data-meta="description" rows="2">${esc(document.description || '')}</textarea></label>
+      <label class="wide">Rechte / Nutzung<input data-meta="rights" value="${esc(document.rights || '')}"></label>
+      <label class="wide">Notizen<textarea data-meta="notes" rows="2">${esc(document.notes || '')}</textarea></label>
+    </div><div class="collection-checks">${state.collections.map(collection => `<label><input type="checkbox" data-collection-id="${collection.id}" ${selectedCollections.has(collection.id) ? 'checked' : ''}>${esc(collection.name)}</label>`).join('') || '<small>Noch keine Sammlung angelegt</small>'}</div><button id="save-document-meta" class="primary">Metadaten speichern</button></details>
+    <details><summary>Technischer Bericht · ${pages.length} Seite${pages.length === 1 ? '' : 'n'}</summary>
+      <div id="technical-page-report">${technicalPageMarkup(diagnostics)}</div>
+    </details>
+    <div class="detail-actions"><button id="detail-review">Unsichere prüfen</button><button id="detail-reprocess">Erneut verarbeiten</button><button id="detail-export">Exporte neu erzeugen</button><button id="detail-integrity">Original prüfen</button><button id="detail-repair">Original reparieren</button><button id="detail-cite">Zitat kopieren</button><button id="detail-finder">Im Finder</button>${document.deleted_at ? '<button id="detail-restore" class="primary">Wiederherstellen</button><button id="detail-purge" class="danger-text">Endgültig löschen</button>' : '<button id="detail-trash" class="danger-text">Papierkorb</button>'}</div>`;
+  $('document-detail').querySelectorAll('.page-filmstrip button').forEach(button => {
+    button.onclick = () => {
+      const page = pages.find(item => String(item.page_index) === button.dataset.page);
+      if (!page || !$('detail-page-image')) return;
+      $('detail-page-image').src = page.image_url;
+      $('technical-page-report').innerHTML = technicalPageMarkup(page);
+      $('document-detail').querySelectorAll('.page-filmstrip button').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+    };
+  });
+  $('document-detail').querySelector('.page-filmstrip button')?.classList.add('active');
+  $('save-document-meta').onclick = () => saveDocumentMetadata(documentId, document.document_status || 'automatisch');
+  $('detail-review').onclick = () => { $('review-queue').click(); };
+  $('detail-reprocess').onclick = async () => {
+    if (!await askConfirmation('Dokument erneut verarbeiten?', 'Die vorhandene Transkription wird mit dem aktuellen lokalen Standardprofil neu erzeugt. Archivangaben und Sammlungen bleiben erhalten.')) return;
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/reprocess`, { method: 'POST' });
+    if (!response.ok) return notify(await responseError(response, 'Neuverarbeitung konnte nicht gestartet werden.'), true);
+    const job = await response.json(); state.job = job.id; openTab('read'); $('cancel').hidden = false; watchJob(job.id);
+  };
+  $('detail-export').onclick = () => exportDocument(documentId, $('detail-export'));
+  $('detail-integrity').onclick = () => verifyLibrary($('detail-integrity'));
+  $('detail-repair').onclick = async () => {
+    if (!await askConfirmation('Verwaltetes Original reparieren?', 'Fehlende oder veränderte Bibliothekskopien werden aus dem unveränderten Prüfsummenobjekt wiederhergestellt.')) return;
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/repair`, { method: 'POST' });
+    if (!response.ok) return notify(await responseError(response, 'Original konnte nicht repariert werden.'), true);
+    const data = await response.json();
+    notify(data.unresolved.length ? `${data.repaired.length} repariert, ${data.unresolved.length} nicht wiederherstellbar.` : `${data.repaired.length} Datei${data.repaired.length === 1 ? '' : 'en'} repariert.`, Boolean(data.unresolved.length));
+  };
+  $('detail-cite').onclick = async () => {
+    const citation = [document.archive, document.fonds, document.shelfmark, document.title, document.year].filter(Boolean).join(', ');
+    try { await navigator.clipboard.writeText(citation); notify('Archivzitat kopiert.'); }
+    catch (_error) { notify('Zitat konnte nicht in die Zwischenablage kopiert werden.', true); }
+  };
+  $('detail-finder').onclick = async () => {
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/reveal`, { method: 'POST' });
+    if (!response.ok) notify(await responseError(response, 'Original konnte nicht angezeigt werden.'), true);
+  };
+  if ($('detail-trash')) $('detail-trash').onclick = async () => {
+      if (!await askConfirmation('Dokument in den Papierkorb?', 'Originale bleiben erhalten und können wiederhergestellt werden.')) return;
+      const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+      if (response.ok) { notify('Dokument wurde in den Papierkorb verschoben.'); $('document-detail').hidden = true; $('viewer-empty').hidden = false; loadDocuments(); }
+    };
+  if ($('detail-restore')) $('detail-restore').onclick = async () => {
+      const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/restore`, { method: 'POST' });
+      if (response.ok) { notify('Dokument wiederhergestellt.'); $('document-detail').hidden = true; $('viewer-empty').hidden = false; await loadDocuments(); }
+    };
+  if ($('detail-purge')) $('detail-purge').onclick = async () => {
+      if (!await askConfirmation('Dokument endgültig löschen?', 'Originale, Transkriptionen und Exporte werden unwiderruflich entfernt. Diese Aktion kann nicht rückgängig gemacht werden.')) return;
+      const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/permanent`, { method: 'DELETE' });
+      if (!response.ok) return notify(await responseError(response, 'Dokument konnte nicht gelöscht werden.'), true);
+      notify('Dokument und verwaltete Dateien wurden endgültig gelöscht.'); $('document-detail').hidden = true; $('viewer-empty').hidden = false; await loadDocuments();
+    };
+}
+
+async function showDocument(documentId) {
+  state.selectedDocumentId = documentId;
+  state.selectedPage = 0;
+  document.querySelector('.archive-workspace')?.classList.add('reader-open');
+  $('viewer-empty').hidden = true;
+  $('viewer-content').hidden = true;
+  $('document-detail').hidden = false;
+  $('document-detail').innerHTML = loadingMarkup('Scan und vollständige Transkription werden geladen …');
+  let documentData;
+  let transcript;
+  let history = [];
+  try {
+    const [documentResponse, transcriptResponse] = await Promise.all([
+      fetch(`/api/documents/${encodeURIComponent(documentId)}`),
+      fetch(`/api/documents/${encodeURIComponent(documentId)}/transcript`)
+    ]);
+    if (!documentResponse.ok) throw new Error(await responseError(documentResponse, 'Dokument konnte nicht geladen werden.'));
+    if (!transcriptResponse.ok) throw new Error(await responseError(transcriptResponse, 'Transkription konnte nicht geladen werden.'));
+    documentData = await documentResponse.json();
+    transcript = await transcriptResponse.json();
+    if (documentData.job_id) {
+      const historyResponse = await fetch(`/api/jobs/${encodeURIComponent(documentData.job_id)}/history`);
+      if (historyResponse.ok) history = await historyResponse.json();
+    }
+  } catch (error) {
+    $('document-detail').innerHTML = `<div class="loading-state is-error">${esc(error.message)}</div>`;
+    return;
+  }
+  const pages = documentData.pages || [];
+  const selectedCollections = new Set((documentData.collections || []).map(item => item.id));
+  const inbox = !selectedCollections.size;
+  $('document-detail').innerHTML = `
+    <div class="document-reader">
+      <header class="reader-toolbar">
+        <button id="reader-back" class="text-button">← Bibliothek</button>
+        <div class="reader-title"><small>${esc((documentData.collections || []).map(item => item.name).join(' / ') || 'Eingang')}</small><strong>${esc(documentData.title)}</strong></div>
+        <span class="reader-status ${Number(documentData.pages?.reduce((sum, page) => sum + Number(page.uncertain_count || 0), 0)) ? 'needs-review' : ''}">${transcript.line_count} Zeilen · ${documentData.pages?.reduce((sum, page) => sum + Number(page.uncertain_count || 0), 0) || 0} offen</span>
+        <button id="reader-export">Exportieren</button>
+      </header>
+      ${documentData.title_needs_review || /^temp(?:orary)?image/i.test(documentData.title) ? '<div class="reader-notice warning"><strong>Titel prüfen</strong><span>macOS hat nur einen temporären Bildnamen übermittelt. Unter „Details“ kannst du einen passenden Titel vergeben.</span></div>' : ''}
+      ${inbox ? '<div class="reader-notice"><strong>Noch im Eingang</strong><span>Die Entzifferung ist fertig. Ordne das Dokument unter „Details“ einer Sammlung zu.</span><button id="reader-file-document">Jetzt ablegen</button></div>' : ''}
+      <nav class="reader-tabs"><button data-reader-tab="read" class="active">Lesen</button><button data-reader-tab="review">Prüfen</button><button data-reader-tab="details">Details & Technik</button></nav>
+      <section id="reader-reading" class="reader-panel active">
+        <aside class="reader-pages">${pages.map(page => `<button data-reader-page="${page.page_index}" title="Seite ${Number(page.page_index) + 1}"><img src="${esc(page.thumbnail_url)}" alt=""><span>${Number(page.page_index) + 1}</span></button>`).join('')}</aside>
+        <div class="reader-scan"><div class="reader-scan-toolbar"><span id="reader-page-label">Seite 1 von ${pages.length}</span><div><button data-image-view="original" class="active">Original</button><button data-image-view="prepared">Aufbereitet</button></div></div><div class="reader-scan-canvas"><img id="reader-scan-image" alt="Ausgewählte Originalseite"><canvas id="reader-line-overlay"></canvas></div></div>
+        <div class="reader-text"><div class="reader-text-toolbar"><div><button data-text-view="diplomatic" class="active">Transkription</button><button data-text-view="reading">Lesefassung</button></div><button id="next-uncertain">Nächste unsichere Stelle</button></div><div id="reader-lines" class="reader-lines"></div><div id="reader-editor" class="reader-editor" hidden><label>Zeile korrigieren<textarea id="reader-line-text" rows="3"></textarea></label><div id="reader-alternatives" class="reader-alternatives"></div><div class="button-row"><button id="reader-save-line" class="primary">Korrektur bestätigen</button><button id="reader-cancel-line">Schließen</button></div><div id="reader-edit-status" class="status-copy"></div></div></div>
+      </section>
+      <section id="reader-details" class="reader-panel">
+        <div class="reader-details-grid"><div class="details-form"><h3>Ordnung und Archivangaben</h3><div class="metadata-grid">
+          <label class="wide">Titel<input data-meta="title" value="${esc(documentData.title)}"></label><label>Jahr<input data-meta="year" type="number" min="800" max="2100" value="${documentData.year || ''}"></label><label>Archiv<input data-meta="archive" value="${esc(documentData.archive || '')}"></label><label>Bestand<input data-meta="fonds" value="${esc(documentData.fonds || '')}"></label><label>Signatur<input data-meta="shelfmark" value="${esc(documentData.shelfmark || '')}"></label><label>Serie<input data-meta="series" value="${esc(documentData.series || '')}"></label><label>Ort<input data-meta="place" value="${esc(documentData.place || '')}"></label><label class="wide">Tags<input data-tags value="${esc((documentData.tags || []).join(', '))}"></label><label class="wide">Beschreibung<textarea data-meta="description" rows="3">${esc(documentData.description || '')}</textarea></label><label class="wide">Notizen<textarea data-meta="notes" rows="3">${esc(documentData.notes || '')}</textarea></label>
+        </div><h4>Sammlungen</h4><div class="collection-checks collection-tree-checks">${state.collections.map(collection => `<label style="--collection-depth:${Number(collection.depth || 0)}"><input type="checkbox" data-collection-id="${collection.id}" ${selectedCollections.has(collection.id) ? 'checked' : ''}>${esc(collection.path)}</label>`).join('') || '<small>Noch keine Sammlung angelegt</small>'}</div><input type="hidden" data-document-status value="${esc(documentData.document_status || 'automatisch')}"><button id="save-document-meta" class="primary">Änderungen speichern</button></div>
+        <div class="details-technical"><h3>Technischer Bericht</h3><div id="technical-page-report">${technicalPageMarkup(pages[0] || {})}</div><h4>Verarbeitungslauf</h4><div class="stored-event-list">${history.length ? history.map(event => `<div><span>${esc(event.created_at)}</span><strong>${esc(event.message)}</strong>${event.payload?.reason ? `<small>${esc(event.payload.reason)}</small>` : ''}</div>`).join('') : '<p class="hint">Für diesen älteren Lauf ist kein Detailprotokoll gespeichert.</p>'}</div><div class="detail-actions"><button id="detail-reprocess">Erneut verarbeiten</button><button id="detail-integrity">Original prüfen</button><button id="detail-finder">Im Finder</button><button id="detail-trash" class="danger-text">Papierkorb</button></div></div></div>
+      </section>
+    </div>`;
+
+  let pageIndex = 0;
+  let textView = 'diplomatic';
+  let reviewOnly = false;
+  let imageView = 'original';
+  let selectedLine = null;
+
+  const currentPage = () => transcript.pages.find(page => Number(page.page_index) === Number(pageIndex)) || transcript.pages[0];
+  function drawReaderLine(line) {
+    selectedLine = line;
+    const image = $('reader-scan-image');
+    const canvas = $('reader-line-overlay');
+    if (!line || !image.naturalWidth) return;
+    const scaleX = image.clientWidth / image.naturalWidth;
+    const scaleY = image.clientHeight / image.naturalHeight;
+    canvas.width = image.clientWidth; canvas.height = image.clientHeight;
+    canvas.style.width = `${image.clientWidth}px`; canvas.style.height = `${image.clientHeight}px`;
+    const context = canvas.getContext('2d');
+    const [x1, y1, x2, y2] = line.bbox;
+    context.fillStyle = 'rgba(211,157,50,.18)'; context.strokeStyle = '#c58719'; context.lineWidth = 3;
+    context.fillRect(x1 * scaleX, y1 * scaleY, (x2 - x1) * scaleX, (y2 - y1) * scaleY);
+    context.strokeRect(x1 * scaleX, y1 * scaleY, (x2 - x1) * scaleX, (y2 - y1) * scaleY);
+    $('reader-line-text').value = line.text;
+    const readings = (line.readings || []).filter(reading => reading.text && reading.text !== line.text);
+    $('reader-alternatives').innerHTML = readings.length ? `<small>Andere Modell-Lesungen</small>${readings.map((reading, index) => `<button data-reader-alternative="${index}">${esc(reading.text)} <span>${esc(reading.model)} · ${Math.round(Number(reading.confidence || 0) * 100)} %</span></button>`).join('')}` : '';
+    $('reader-alternatives').querySelectorAll('[data-reader-alternative]').forEach(button => button.onclick = event => { event.stopPropagation(); $('reader-line-text').value = readings[Number(button.dataset.readerAlternative)].text; });
+    $('reader-editor').hidden = false;
+    $('reader-lines').querySelectorAll('[data-line-id]').forEach(button => button.classList.toggle('selected', button.dataset.lineId === line.id));
+    image.parentElement.scrollTo({ top: Math.max(0, y1 * scaleY - 80), behavior: 'smooth' });
+  }
+  function renderReaderPage() {
+    const page = currentPage();
+    if (!page) { $('reader-lines').innerHTML = '<div class="empty-state">Für dieses Dokument wurde kein Text erkannt.</div>'; return; }
+    const pageData = pages.find(item => Number(item.page_index) === Number(page.page_index));
+    $('reader-page-label').textContent = `Seite ${Number(page.page_index) + 1} von ${pages.length}`;
+    $('reader-scan-image').src = `${pageData?.image_url || page.image_url}?view=${imageView}`;
+    const lines = reviewOnly ? page.lines.filter(line => line.review_status === 'unsicher') : page.lines;
+    $('reader-lines').innerHTML = textView === 'reading'
+      ? `<div class="readable-text">${esc(page.reading_text || 'Keine Lesefassung verfügbar.')}</div>`
+      : lines.map(line => `<button class="transcript-line ${line.review_status === 'unsicher' ? 'uncertain' : ''}" data-line-id="${esc(line.id)}"><span>${esc(line.text || '‹leer›')}</span><small>${Math.round(Number(line.confidence || 0) * 100)} % · ${esc(line.model)}</small></button>`).join('') || `<div class="empty-state compact">${reviewOnly ? 'Auf dieser Seite sind keine unsicheren Zeilen offen.' : 'Keine Zeilen erkannt.'}</div>`;
+    $('reader-lines').querySelectorAll('[data-line-id]').forEach(button => button.onclick = () => drawReaderLine(page.lines.find(line => line.id === button.dataset.lineId)));
+    $('reader-editor').hidden = true;
+    selectedLine = null;
+    $('document-detail').querySelectorAll('[data-reader-page]').forEach(button => button.classList.toggle('active', Number(button.dataset.readerPage) === Number(pageIndex)));
+    if ($('technical-page-report')) $('technical-page-report').innerHTML = technicalPageMarkup(pageData || {});
+  }
+  $('reader-scan-image').onload = () => { if (selectedLine) drawReaderLine(selectedLine); };
+  $('document-detail').querySelector('.reader-scan-canvas').onclick = event => {
+    const image = $('reader-scan-image');
+    const page = currentPage();
+    if (!page?.lines?.length || !image.naturalWidth) return;
+    const rect = image.getBoundingClientRect();
+    const x = (event.clientX - rect.left) * image.naturalWidth / rect.width;
+    const y = (event.clientY - rect.top) * image.naturalHeight / rect.height;
+    const containing = page.lines.find(line => x >= line.bbox[0] && x <= line.bbox[2] && y >= line.bbox[1] && y <= line.bbox[3]);
+    const nearest = containing || page.lines.reduce((best, line) => {
+      const distance = Math.abs(y - (line.bbox[1] + line.bbox[3]) / 2);
+      return !best || distance < best.distance ? { line, distance } : best;
+    }, null)?.line;
+    if (nearest) drawReaderLine(nearest);
+  };
+  renderReaderPage();
+  $('document-detail').querySelectorAll('[data-reader-page]').forEach(button => button.onclick = () => { pageIndex = Number(button.dataset.readerPage); renderReaderPage(); });
+  $('document-detail').querySelectorAll('[data-text-view]').forEach(button => button.onclick = () => { textView = button.dataset.textView; $('document-detail').querySelectorAll('[data-text-view]').forEach(item => item.classList.toggle('active', item === button)); renderReaderPage(); });
+  $('document-detail').querySelectorAll('[data-image-view]').forEach(button => button.onclick = () => { imageView = button.dataset.imageView; $('document-detail').querySelectorAll('[data-image-view]').forEach(item => item.classList.toggle('active', item === button)); renderReaderPage(); });
+  $('document-detail').querySelectorAll('[data-reader-tab]').forEach(button => button.onclick = () => {
+    $('document-detail').querySelectorAll('[data-reader-tab]').forEach(item => item.classList.toggle('active', item === button));
+    if (button.dataset.readerTab === 'details') { $('reader-reading').classList.remove('active'); $('reader-details').classList.add('active'); return; }
+    $('reader-details').classList.remove('active'); $('reader-reading').classList.add('active'); reviewOnly = button.dataset.readerTab === 'review'; textView = 'diplomatic'; renderReaderPage();
+  });
+  $('next-uncertain').onclick = () => {
+    const uncertain = transcript.pages.flatMap(page => page.lines.map(line => ({ page: page.page_index, line })).filter(item => item.line.review_status === 'unsicher'));
+    if (!uncertain.length) return notify('Keine unsicheren Stellen mehr offen.');
+    const current = uncertain.findIndex(item => selectedLine && item.line.id === selectedLine.id);
+    const next = uncertain[(current + 1) % uncertain.length]; pageIndex = Number(next.page); renderReaderPage(); setTimeout(() => drawReaderLine(next.line), 30);
+  };
+  $('reader-save-line').onclick = async () => {
+    if (!selectedLine) return;
+    await withButtonBusy($('reader-save-line'), 'Wird gespeichert …', async () => {
+      const response = await fetch(`/api/lines/${encodeURIComponent(selectedLine.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: $('reader-line-text').value }) });
+      if (!response.ok) throw new Error(await responseError(response, 'Korrektur konnte nicht gespeichert werden.'));
+      notify('Korrektur bestätigt und Suchindex aktualisiert.'); await showDocument(documentId);
+    }).catch(error => notify(error.message, true));
+  };
+  $('reader-cancel-line').onclick = () => { $('reader-editor').hidden = true; selectedLine = null; };
+  $('reader-back').onclick = () => { document.querySelector('.archive-workspace')?.classList.remove('reader-open'); $('document-detail').hidden = true; $('viewer-empty').hidden = false; state.selectedDocumentId = null; };
+  $('reader-export').onclick = () => exportDocument(documentId, $('reader-export'));
+  if ($('reader-file-document')) $('reader-file-document').onclick = () => { $('document-detail').querySelector('[data-reader-tab="details"]').click(); setTimeout(() => $('document-detail').querySelector('.collection-tree-checks input')?.focus(), 30); };
+  $('save-document-meta').onclick = () => saveDocumentMetadata(documentId, documentData.document_status || 'automatisch');
+  $('detail-reprocess').onclick = async () => { const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/reprocess`, { method: 'POST' }); if (!response.ok) return notify(await responseError(response, 'Neuverarbeitung konnte nicht gestartet werden.'), true); const job = await response.json(); state.job = job.id; state.completedJob = null; openTab('read'); watchJob(job.id); };
+  $('detail-integrity').onclick = () => verifyLibrary($('detail-integrity'));
+  $('detail-finder').onclick = async () => { const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/reveal`, { method: 'POST' }); if (!response.ok) notify(await responseError(response, 'Original konnte nicht angezeigt werden.'), true); };
+  $('detail-trash').onclick = async () => { if (!await askConfirmation('Dokument in den Papierkorb?', 'Die verwalteten Originale bleiben bis zum endgültigen Löschen erhalten.')) return; const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' }); if (response.ok) { document.querySelector('.archive-workspace')?.classList.remove('reader-open'); await loadDocuments(); } };
+}
+
+function metric(value) { return value == null ? '–' : `${Math.round(Number(value) * 100)} %`; }
+
+function technicalPageMarkup(page) {
+  const profile = page.profile || {};
+  const engines = page.engine_runs || [];
+  return `<div class="technical-grid"><div><span>Seite</span><strong>${Number(page.page_index || 0) + 1}</strong></div><div><span>Erkannte Schrift</span><strong>${esc(profile.script || 'unbekannt')}</strong></div><div><span>Layout</span><strong>${esc(profile.layout || 'unbekannt')}</strong></div><div><span>Modell</span><strong>${esc(page.model || 'noch nicht verarbeitet')}</strong></div><div><span>Bildvariante</span><strong>${esc(page.variant || '–')}</strong></div><div><span>Geschätzte CER</span><strong>${page.expected_cer == null ? '–' : `${(Number(page.expected_cer) * 100).toFixed(1).replace('.', ',')} %`}</strong></div><div><span>Helligkeit</span><strong>${metric(page.brightness)}</strong></div><div><span>Kontrast</span><strong>${metric(page.contrast)}</strong></div><div><span>Schärfe</span><strong>${metric(page.sharpness)}</strong></div><div><span>Schieflage</span><strong>${page.skew_degrees == null ? '–' : `${Number(page.skew_degrees).toFixed(2)}°`}</strong></div><div><span>Unsichere Zeilen</span><strong>${page.uncertain_count || 0}</strong></div><div><span>Erkannte Zeilen</span><strong>${page.line_count || 0}</strong></div></div>${(profile.evidence || []).length ? `<p class="technical-note"><strong>Routing:</strong> ${esc(profile.evidence.join(' · '))}</p>` : ''}${(page.warnings || []).length ? `<p class="technical-note warning"><strong>Hinweise:</strong> ${esc(page.warnings.join(' · '))}</p>` : ''}<div class="engine-list">${engines.map(run => `<span><strong>${esc(run.engine)}</strong> · ${esc(run.backend)} · ${Number(run.duration_seconds).toFixed(1)} s${run.success ? '' : ` · ${esc(run.message)}`}</span>`).join('') || '<span>Noch keine Modellläufe gespeichert.</span>'}</div>`;
+}
+
+async function saveDocumentMetadata(documentId, status) {
+  const button = $('save-document-meta');
+  await withButtonBusy(button, 'Wird gespeichert …', async () => {
+    const payload = { document_status: $('document-detail').querySelector('[data-document-status]')?.value || status, collection_ids: [...$('document-detail').querySelectorAll('[data-collection-id]:checked')].map(item => item.dataset.collectionId), tags: ($('document-detail').querySelector('[data-tags]')?.value || '').split(',').map(value => value.trim()).filter(Boolean) };
+    $('document-detail').querySelectorAll('[data-meta]').forEach(input => {
+      payload[input.dataset.meta] = input.type === 'number' ? (input.value ? Number(input.value) : null) : input.value;
+    });
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    if (!response.ok) throw new Error(await responseError(response, 'Metadaten konnten nicht gespeichert werden.'));
+    notify('Archivangaben gespeichert.');
+    await loadDocuments();
+    await showDocument(documentId);
+  }).catch(error => notify(error.message, true));
+}
+
+async function exportDocument(documentId, button) {
+  await withButtonBusy(button, 'Exporte werden erzeugt …', async () => {
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/export`, { method: 'POST' });
+    if (!response.ok) throw new Error(await responseError(response, 'Export fehlgeschlagen.'));
+    const data = await response.json(); renderExports(data.downloads || []); notify('Aktuelle Exporte wurden erzeugt.');
+  }).catch(error => notify(error.message, true));
+}
+
+function renderMigrationNotice() {
+  const notice = $('migration-notice');
+  const pending = state.migration?.pending || 0;
+  notice.hidden = !pending;
+  if (pending) $('migration-copy').textContent = `${pending} Dokument${pending === 1 ? '' : 'e'} liegen noch außerhalb der verwalteten Bibliothek.`;
+}
+
+$('open-migration').onclick = () => {
+  const migration = state.migration;
+  if (!migration) return;
+  $('migration-size').textContent = `${(Number(migration.bytes || 0) / 1024 / 1024).toFixed(1).replace('.', ',')} MB`;
+  $('migration-list').innerHTML = migration.documents.filter(item => !item.managed).map(item => `<div class="migration-item"><input class="migration-select" type="checkbox" value="${item.id}" checked><span><strong>${esc(item.title)}</strong><small>${item.reachable}/${item.sources} Quellen erreichbar${item.output_available ? '' : ' · Ausgaben fehlen'}${item.grouping_review ? ' · Gruppierung prüfen' : ''}</small>${item.grouping_review ? `<label class="split-option"><input type="checkbox" data-split-id="${item.id}" checked> Lose Bilder als einzelne Dokumente übernehmen</label>` : ''}</span></div>`).join('');
+  $('migration-dialog').showModal();
+};
+
+$('migration-dialog').addEventListener('close', async () => {
+  if ($('migration-dialog').returnValue !== 'confirm') return;
+  const ids = [...$('migration-list').querySelectorAll('.migration-select:checked')].map(input => input.value);
+  const splitIds = [...$('migration-list').querySelectorAll('[data-split-id]:checked')].map(input => input.dataset.splitId).filter(id => ids.includes(id));
+  setInlineStatus($('search-status'), 'Originale werden kopiert und geprüft …', { busy: true });
+  const response = await fetch('/api/library/migrate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document_ids: ids, split_document_ids: splitIds }) });
+  const data = await response.json();
+  if (!response.ok || data.errors?.length) notify(`${data.migrated?.length || 0} übernommen, ${data.errors?.length || 0} mit Problemen.`, Boolean(data.errors?.length));
+  else notify(`${data.migrated.length} Dokumente sicher übernommen.`);
+  await loadDocuments();
+});
+
+function openCollectionDialog(collectionId = null) {
+  state.editCollectionId = collectionId;
+  const collection = state.collections.find(item => item.id === collectionId);
+  $('collection-dialog-title').textContent = collection ? 'Sammlung bearbeiten' : 'Neue Sammlung';
+  $('save-collection').textContent = collection ? 'Speichern' : 'Anlegen';
+  $('delete-collection').hidden = !collection;
+  $('collection-name').value = collection?.name || ''; $('collection-description').value = collection?.description || '';
+  $('collection-parent').innerHTML = '<option value="">Bibliothek (oberste Ebene)</option>' + state.collections.filter(item => item.id !== collectionId && !collectionDescendants(collectionId || '').includes(item.id)).map(item => `<option value="${esc(item.id)}">${esc(item.path)}</option>`).join('');
+  $('collection-parent').value = collection?.parent_id || '';
+  $('collection-dialog').showModal(); setTimeout(() => $('collection-name').focus(), 50);
+}
+$('new-collection').onclick = () => openCollectionDialog();
+$('collection-dialog').addEventListener('close', async () => {
+  if ($('collection-dialog').returnValue !== 'confirm' || !$('collection-name').value.trim()) return;
+  const editing = state.editCollectionId;
+  const response = await fetch(editing ? `/api/collections/${encodeURIComponent(editing)}` : '/api/collections', { method: editing ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('collection-name').value.trim(), description: $('collection-description').value.trim(), parent_id: $('collection-parent').value || null, update_parent: true }) });
+  if (!response.ok) return notify(await responseError(response, 'Sammlung konnte nicht angelegt werden.'), true);
+  notify(editing ? 'Sammlung gespeichert.' : 'Sammlung angelegt.'); state.editCollectionId = null; await loadDocuments();
+});
+$('delete-collection').onclick = async () => {
+  const collectionId = state.editCollectionId;
+  if (!collectionId || !await askConfirmation('Sammlung löschen?', 'Dokumente werden nicht gelöscht. Unterordner rücken eine Ebene nach oben; unzugeordnete Dokumente erscheinen im Eingang.')) return;
+  const response = await fetch(`/api/collections/${encodeURIComponent(collectionId)}`, { method: 'DELETE' });
+  if (!response.ok) return notify(await responseError(response, 'Sammlung konnte nicht gelöscht werden.'), true);
+  $('collection-dialog').close('cancel'); state.editCollectionId = null; notify('Sammlung gelöscht; Dokumente bleiben erhalten.'); await loadDocuments();
+};
+
+async function verifyLibrary(button = $('verify-library')) {
+  await withButtonBusy(button, 'Prüfsummen laufen …', async () => {
+    const response = await fetch('/api/library/integrity', { method: 'POST' });
+    if (!response.ok) throw new Error(await responseError(response, 'Bibliothek konnte nicht geprüft werden.'));
+    const data = await response.json();
+    notify(data.problems.length ? `${data.problems.length} Dateiproblem${data.problems.length === 1 ? '' : 'e'} gefunden.` : `${data.files} Dateien erfolgreich geprüft.`, Boolean(data.problems.length));
+    await loadDocuments();
+  }).catch(error => notify(error.message, true));
+}
+$('verify-library').onclick = () => verifyLibrary();
 
 async function runSearch() {
   const text = $('query').value.trim();
@@ -473,6 +1157,9 @@ async function runSearch() {
     return;
   }
   if ($('search-button').getAttribute('aria-busy') === 'true') return;
+  $('document-browser').hidden = true;
+  $('search-results-view').hidden = false;
+  $('show-library').classList.remove('active');
   const request = ++state.searchRequest;
   const started = performance.now();
   setButtonBusy($('search-button'), true, 'Suche läuft …');
@@ -519,7 +1206,8 @@ function renderHits(hits, title, emptyMessage = 'Keine passenden Fundstellen gef
     row.onclick = () => {
       $('results').querySelectorAll('tr').forEach(item => item.classList.remove('selected'));
       row.classList.add('selected');
-      showHit(hits[Number(row.dataset.index)]);
+      const hit = hits[Number(row.dataset.index)];
+      if (hit.line_id) showHit(hit); else showDocument(hit.document_id);
     };
     row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); row.click(); } };
   });
@@ -531,6 +1219,9 @@ $('fuzziness').oninput = () => { $('fuzziness-value').textContent = `${$('fuzzin
 $('review-queue').onclick = async () => {
   const button = $('review-queue');
   if (button.getAttribute('aria-busy') === 'true') return;
+  $('document-browser').hidden = true;
+  $('search-results-view').hidden = false;
+  $('show-library').classList.remove('active');
   const request = ++state.searchRequest;
   const started = performance.now();
   setButtonBusy(button, true, 'Prüfliste wird geladen …');
@@ -559,6 +1250,7 @@ async function showHit(hit) {
   const request = ++state.hitRequest;
   state.selected = hit;
   $('viewer-empty').hidden = true;
+  $('document-detail').hidden = true;
   $('viewer-content').hidden = false;
   setInlineStatus($('scan-status'), 'Scan-Ausschnitt wird geladen …', { busy: true });
   $('scan-wrap').setAttribute('aria-busy', 'true');
@@ -1005,6 +1697,7 @@ async function loadSystemStatus(button = null) {
     ['OpenRouter', data.openrouter_configured ? 'Schlüssel gespeichert' : 'nicht eingerichtet', !data.openrouter_configured],
     ['Bestätigte Referenz', `${data.ground_truth?.verified_lines || 0} Zeilen in ${data.ground_truth?.documents || 0} Dokumenten`],
     ['Cloud-Nutzung', `${data.cloud_usage?.requests || 0} Prüfungen · $${Number(data.cloud_usage?.cost_usd || 0).toFixed(4)}`],
+    ['Bibliothek', `${data.library || data.output || 'lokal'}${data.library_pending ? ` · ${data.library_pending} noch zu übernehmen` : ' · vollständig verwaltet'}`],
     ['Ausgabe', data.output],
     ['Datenbank', data.database],
     ['Version', data.version]
@@ -1015,9 +1708,15 @@ async function loadSystemStatus(button = null) {
 }
 $('refresh-system').onclick = () => loadSystemStatus($('refresh-system'));
 
+$('guide-file').onclick = () => { $('first-run-guide').hidden = true; $('choose-files').click(); };
+$('guide-folder').onclick = () => { $('first-run-guide').hidden = true; $('folder').click(); };
+$('guide-library').onclick = () => { $('first-run-guide').hidden = true; openTab('search'); };
+$('dismiss-guide').onclick = () => { $('first-run-guide').hidden = true; localStorage.setItem('schriftlotse-guide-dismissed', '1'); };
+
 async function initialize() {
   renderSources();
   await Promise.all([loadRecovery(), loadDocuments(), loadSettings(), loadCloudModels(), loadSystemStatus()]);
+  $('first-run-guide').hidden = Boolean(state.documents.length || localStorage.getItem('schriftlotse-guide-dismissed'));
   const initialTab = location.hash.slice(1);
   if (['read', 'search', 'models', 'settings'].includes(initialTab)) openTab(initialTab);
 }

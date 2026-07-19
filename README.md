@@ -20,6 +20,9 @@ Schreibmaschinentext von etwa 1800 bis 1945; ältere Quellen werden bestmöglich
 - eScriptorium-Paket und Rückimport korrigierter PAGE-XML-Dateien
 - Volltext-, Namens-, Fuzzy- und optional semantische Suche über alle Modell-Lesungen
 - Sprung zur Fundstelle, pixelgenaue Markierung und indexierte manuelle Korrekturen
+- sichtbare Archivbibliothek mit Eingang, Sammlungen, Archivmetadaten und Prüfliste
+- verwaltete, unveränderte Originale mit SHA-256-Prüfsummen und Integritätsprüfung
+- Live-Seitenvorschau, Modellstufe und dauerhaft gespeicherter technischer Laufbericht
 - keine Scans, Modellgewichte oder Ergebnisse im GitHub-Repository
 
 ## Start auf Apple Silicon
@@ -65,9 +68,15 @@ uv run schriftlotse gui
 - **Entziffern:** Dateien ablegen oder einen Ordner wählen, optional Jahr und Schrift angeben.
   Lose Bilder gelten zunächst als eigene Dokumente. Über **Prüfen & Metadaten** lassen sich
   Titel, Jahr und Schrift pro Dokument setzen; echte Bildserien können bewusst gruppiert werden.
-- **Archivsuche:** intelligent, exakt, nach Namen oder nach Bedeutung suchen; Treffer öffnen
-  direkt die richtige logische Seite und Zeile. Unsichere Stellen lassen sich priorisiert
-  abarbeiten; anschließend erzeugt **Aktuelle Fassung exportieren** alle Ausgabeformate neu.
+  Während der Verarbeitung bleibt das technische Protokoll vollständig offen: Bildaufbereitung,
+  erkannte Schrift/Epoche, Modellwahl, Begründung, Backend und Laufzeiten sind live sichtbar.
+- **Archiv & Suche:** Alle Dokumente sind auch ohne Suchbegriff sichtbar. Eingang, eigene
+  verschachtelte Sammlungen, Archiv/Bestand/Signatur und verknüpfte Quellordner bilden den
+  dauerhaften Arbeitsbereich. Ein Dokument öffnet als synchroner Scan-/Text-Arbeitsplatz mit
+  vollständiger Transkription, konservativer Lesefassung und technischer Laufhistorie. Eine Suche
+  öffnet direkt die richtige logische Seite und Zeile.
+  Unsichere Stellen lassen sich priorisiert abarbeiten; Exporte werden jederzeit aus der
+  Datenbank neu erzeugt.
 - **Modelle:** lokale Gewichte und Installationsstatus verwalten.
 - **Einstellungen:** Standardprofil, Schrift, Ausgabeordner, Suche und alle Cloudoptionen
   sichtbar konfigurieren; OpenRouter-Schlüssel prüfen und im macOS-Schlüsselbund speichern.
@@ -117,6 +126,29 @@ Doppelseiten über den Buchfalz und speichert die Abbildung zur Originalseite. D
 Suchmarkierungen auch nach Drehung, Beschnitt und Trennung korrekt. Jahres- oder Formularregeln
 schreiben die Rohtranskription niemals heimlich um. Automatische, alternative und manuell
 bestätigte Lesungen werden getrennt gespeichert und durchsucht.
+
+## Bibliothek und Datensicherheit
+
+Neue Originale werden standardmäßig unter `~/Documents/SchriftLotse/Bibliothek` verwaltet.
+Jedes Dokument besitzt einen stabilen UUID-Ordner für Originale, Arbeitsseiten, Vorschau und
+reproduzierbare Ergebnisse. Inhaltsgleiche Importe teilen sich ein internes Objekt; sichtbare
+Dokumentordner bleiben trotzdem eigenständig. Beim ersten Start nach dem Bibliotheksupdate
+zeigt die App eine Migrationsvorschau und verändert alte Quellen erst nach Bestätigung.
+
+Ein geordneter Stammordner wird als oberste Sammlung übernommen; seine Unterordner werden zu
+verschachtelten Sammlungen. Der Ordner bleibt als manuell abgleichbare Quelle verknüpft.
+**Änderungen prüfen** erkennt neue, geänderte, verschobene und fehlende Dateien. Es gibt keine
+Hintergrundüberwachung: Erst eine bestätigte Auswahl startet neue OCR. Verschobene identische
+Dateien werden ohne neue Erkennung umgeordnet, fehlende Quellen löschen niemals die verwaltete
+Kopie. Direkte Einzelimporte ohne Sammlung bleiben im **Eingang**, bis sie abgelegt werden.
+
+Die native macOS-App übergibt ausgewählte Pfade direkt und bewahrt dadurch den echten
+Dateinamen. Temporäre Namen wie `tempImage…` werden zusätzlich erkannt und müssen vor dem Start
+durch einen verständlichen Titel ersetzt werden.
+
+Die Bibliotheksprüfung vergleicht verwaltete Dateien mit ihrer SHA-256-Prüfsumme. Sie ersetzt
+kein Backup; der gesamte Ordner sollte weiterhin durch Time Machine oder eine andere lokale
+Sicherung erfasst werden.
 
 ## Kraken und eScriptorium
 

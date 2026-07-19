@@ -2,6 +2,25 @@
 
 ## 0.2.0 – 2026-07-18
 
+- vollständiger Scan-/Text-Dokumentarbeitsplatz mit synchronen Zeilenmarkierungen,
+  Original-/Aufbereitet-Ansicht, Transkription, Lesefassung und direkter Korrektur
+- verschachtelte Sammlungen und strukturierter Ordnerimport mit sichtbarem Zielpfad
+- verknüpfte Quellordner mit manuellem, nichtdestruktivem Prüfsummen-Abgleich
+- Eingang erklärt fertige Ergebnisse und führt direkt zu Transkription und Ablage
+- dauerhaft geöffnetes strukturiertes Laufprotokoll zeigt Bildanalyse, Modellroute,
+  Auswahlbegründung, Backends und Laufzeiten
+- native Dateiauswahl umgeht WebKit-Temporärnamen; generische Titel werden vor OCR abgefangen
+
+- vollständiger Archivbrowser zeigt Dokumente ohne vorherige Suche in Raster oder Liste
+- flexible Sammlungen sowie Archiv-, Bestands-, Serien- und Signaturmetadaten
+- verwaltete Originalbibliothek mit Inhaltsprüfung, Dublettenerkennung und Papierkorb
+- bestätigte Migrationsvorschau für alte Referenzen; versehentliche Bildserien lassen sich
+  ohne Verlust vorhandener OCR-Zeilen in einzelne Dokumente trennen
+- Exporte werden aus der Datenbank regeneriert und hängen nicht mehr von `result.json` ab
+- technische Seitenberichte speichern Bilddiagnostik, Profil, Modellläufe und Unsicherheiten
+- ressourcenschonende Live-Seitenvorschau mit Stufe, Modell und erkannten Zeilenbereichen
+- Dokumentmetadaten und Sammlungszuordnungen bleiben bei einer erneuten OCR erhalten
+
 - nativer WKWebView-Dateidialog und vollständiges Bearbeiten-Menü für ⌘X/⌘C/⌘V/⌘A
 - eigener dynamischer Loopback-Port und Instanzprüfung verhindern eine veraltete Oberfläche
 - kompakter Vier-Schritt-Arbeitsfluss mit barrierearmem Schrift-Combobox und sichtbaren

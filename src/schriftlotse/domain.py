@@ -94,6 +94,7 @@ class DocumentRequest(BaseModel):
     group_images_by_folder: bool = False
     cloud_model_profile: str = "quality"
     document_metadata: dict[str, DocumentMetadata] = Field(default_factory=dict)
+    target_document_id: str | None = None
 
 
 class PeriodEstimate(BaseModel):
@@ -208,6 +209,7 @@ class PageResult(BaseModel):
     profile: DocumentProfile = Field(default_factory=DocumentProfile)
     regions: list[RegionResult] = Field(default_factory=list)
     engine_runs: list[EngineRun] = Field(default_factory=list)
+    image_diagnostics: ImageDiagnostics | None = None
 
 
 class DocumentResult(BaseModel):

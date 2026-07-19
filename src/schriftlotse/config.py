@@ -79,6 +79,15 @@ class Settings:
     default_script: str = "auto"
     openrouter_profile: str = "quality"
     show_preprocessing: bool = True
+    library_dir: str | None = None
+
+    def resolved_library(self, paths: AppPaths) -> Path:
+        """Return the durable archive root, independent from temporary exports."""
+        return (
+            Path(self.library_dir).expanduser().resolve()
+            if self.library_dir
+            else (paths.output / "Bibliothek").resolve()
+        )
 
     @classmethod
     def load(cls, paths: AppPaths) -> Settings:

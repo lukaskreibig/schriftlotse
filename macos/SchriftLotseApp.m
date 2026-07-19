@@ -4,7 +4,7 @@
 #import <sys/socket.h>
 #import <unistd.h>
 
-@interface SchriftLotseDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate>
+@interface SchriftLotseDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) NSTask *backend;
@@ -24,6 +24,13 @@
     // SchriftLotse stores state in SQLite, not in browser storage. An ephemeral
     // WebKit store prevents an old stylesheet from surviving an app rebuild.
     configuration.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
+    [configuration.userContentController addScriptMessageHandler:self name:@"schriftlotsePicker"];
+    NSString *tokenScript = [NSString stringWithFormat:
+        @"window.__schriftlotseNativeToken=%@;", [self jsonString:self.instanceToken]];
+    [configuration.userContentController addUserScript:[[WKUserScript alloc]
+        initWithSource:tokenScript
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+        forMainFrameOnly:YES]];
     self.webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     self.webView.navigationDelegate = self;
     self.webView.UIDelegate = self;
@@ -48,6 +55,41 @@
     [self showMessage:@"SchriftLotse startet lokal …"
                 detail:@"Modelle und Dokumente bleiben auf diesem Mac."];
     [self startBackendOnPort:port];
+}
+
+- (NSString *)jsonString:(NSString *)value {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@[value ?: @""] options:0 error:nil];
+    NSString *array = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (array.length < 2) return @"\"\"";
+    return [array substringWithRange:NSMakeRange(1, array.length - 2)];
+}
+
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+    (void)userContentController;
+    if (![message.name isEqualToString:@"schriftlotsePicker"] ||
+        ![message.body isKindOfClass:NSDictionary.class]) return;
+    NSURL *origin = message.frameInfo.request.URL;
+    if (!message.frameInfo.mainFrame ||
+        !([origin.host isEqualToString:@"127.0.0.1"] || [origin.host isEqualToString:@"localhost"])) return;
+    NSString *action = ((NSDictionary *)message.body)[@"action"];
+    BOOL folder = [action isEqualToString:@"folder"];
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = !folder;
+    panel.canChooseDirectories = folder;
+    panel.allowsMultipleSelection = !folder;
+    panel.resolvesAliases = YES;
+    panel.prompt = folder ? @"Archivordner übernehmen" : @"Auswählen";
+    [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
+        if (result != NSModalResponseOK) return;
+        NSMutableArray<NSString *> *paths = [NSMutableArray array];
+        for (NSURL *url in panel.URLs) if (url.path) [paths addObject:url.path];
+        NSData *data = [NSJSONSerialization dataWithJSONObject:paths options:0 error:nil];
+        NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"[]";
+        NSString *script = [NSString stringWithFormat:
+            @"window.schriftlotseNativePicked&&window.schriftlotseNativePicked(%@);", json];
+        [self.webView evaluateJavaScript:script completionHandler:nil];
+    }];
 }
 
 - (NSInteger)unusedLoopbackPort {
@@ -220,6 +262,7 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
+    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"schriftlotsePicker"];
     if (self.backend.running) [self.backend terminate];
 }
 

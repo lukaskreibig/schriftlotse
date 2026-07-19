@@ -41,6 +41,33 @@ def test_runtime_progress_never_moves_backwards_and_has_eta() -> None:
     assert 95 <= snapshot["estimated_remaining_seconds"] <= 105
 
 
+def test_runtime_exposes_structured_low_overhead_live_preview(tmp_path) -> None:
+    preview = tmp_path / "preview.jpg"
+    preview.write_bytes(b"jpeg")
+    runtime = JobRuntime("live-job", pipeline=object())  # type: ignore[arg-type]
+
+    runtime.emit_live(
+        {
+            "stage": "ocr",
+            "document_title": "Sterbeurkunde",
+            "page_number": 2,
+            "model": "TrOCR Kurrent",
+            "preview_path": str(preview),
+            "width": 1200,
+            "height": 1800,
+            "boxes": [[10, 20, 100, 40]],
+        }
+    )
+
+    snapshot = runtime.snapshot()
+    assert snapshot["live"]["preview_url"] == "/api/jobs/live-job/preview"
+    assert snapshot["live"]["stage"] == "ocr"
+    assert snapshot["live"]["boxes"] == [[10, 20, 100, 40]]
+    assert "preview_path" not in snapshot["live"]
+    assert snapshot["events"][0]["stage"] == "ocr"
+    assert snapshot["events"][0]["model"] == "TrOCR Kurrent"
+
+
 def test_local_health_probe() -> None:
     route = next(
         route for route in create_app().routes if getattr(route, "path", "") == "/api/health"
@@ -149,6 +176,57 @@ def test_import_preview_keeps_loose_scans_separate(monkeypatch, app_paths) -> No
     assert separate.json()["document_count"] == 2
     assert grouped.json()["document_count"] == 1
     assert separate.json()["series_suggestions"][0]["pages"] == 2
+
+
+def test_native_source_registration_requires_current_instance_token(
+    monkeypatch, app_paths
+) -> None:
+    from PIL import Image
+
+    monkeypatch.setattr(AppPaths, "default", classmethod(lambda _cls: app_paths))
+    monkeypatch.setenv("SCHRIFTLOTSE_INSTANCE_TOKEN", "native-test-token")
+    scan = app_paths.cache / "Echter Dateiname.jpg"
+    scan.parent.mkdir(parents=True)
+    Image.new("RGB", (20, 20), "white").save(scan)
+    client = TestClient(create_app(ApplicationState()))
+
+    denied = client.post("/api/native-sources", json={"paths": [str(scan)]})
+    accepted = client.post(
+        "/api/native-sources",
+        json={"paths": [str(scan)]},
+        headers={"x-schriftlotse-instance": "native-test-token"},
+    )
+
+    assert denied.status_code == 403
+    assert accepted.status_code == 200
+    assert accepted.json()["sources"][0]["name"] == "Echter Dateiname.jpg"
+
+
+def test_folder_mapping_creates_nested_collections_and_linked_source(
+    monkeypatch, app_paths
+) -> None:
+    from PIL import Image
+
+    monkeypatch.setattr(AppPaths, "default", classmethod(lambda _cls: app_paths))
+    root = app_paths.cache / "Genealogische Funde"
+    child = root / "Müller" / "Briefe"
+    child.mkdir(parents=True)
+    scan = child / "Brief 1891.jpg"
+    Image.new("RGB", (20, 20), "white").save(scan)
+    state = ApplicationState()
+    document_id = discover_documents([root], group_images_by_folder=False)[0].id
+
+    mapping, sources = state._prepare_folder_mappings(  # noqa: SLF001
+        [root], group_images_by_folder=False
+    )
+    rows = [dict(row) for row in state.database.list_collections()]
+    by_id = {row["id"]: row for row in rows}
+    leaf = by_id[mapping[document_id][0]]
+
+    assert leaf["name"] == "Briefe"
+    assert by_id[leaf["parent_id"]]["name"] == "Müller"
+    assert sources[document_id]["root"] == str(root.resolve())
+    assert state.database.list_source_folders()[0]["label"] == "Genealogische Funde"
 
 
 def test_adaptive_job_preserves_consent_budget_and_document_metadata(

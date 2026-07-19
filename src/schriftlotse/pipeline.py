@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import threading
 import uuid
 from collections.abc import Callable
@@ -25,6 +26,7 @@ from schriftlotse.domain import (
 )
 from schriftlotse.exports import export_document
 from schriftlotse.ingest import discover_documents, iter_document_pages, pdf_text_layer
+from schriftlotse.library import LibraryManager
 from schriftlotse.ocr import RecognizerRouter
 from schriftlotse.preprocessing import (
     generate_variants,
@@ -34,6 +36,7 @@ from schriftlotse.preprocessing import (
 )
 
 ProgressCallback = Callable[[str, float], None]
+LiveCallback = Callable[[dict[str, Any]], None]
 
 
 def slugify(value: str) -> str:
@@ -53,7 +56,13 @@ class ProcessingPipeline:
         self.settings = settings or Settings.load(self.paths)
         self.database = database or Database(self.paths.database)
         self.router = RecognizerRouter(self.paths, self.settings)
+        self.library = LibraryManager(self.paths, self.settings)
+        self.live_callback: LiveCallback | None = None
         self._cancel = threading.Event()
+
+    def _live(self, **payload: Any) -> None:
+        if self.live_callback is not None:
+            self.live_callback(payload)
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -80,6 +89,10 @@ class ProcessingPipeline:
                 job_id, JobStatus.FAILED, "Keine unterstützten Dateien gefunden"
             )
             raise ValueError("Keine unterstützten Dateien gefunden")
+        if request.target_document_id:
+            if len(documents) != 1:
+                raise ValueError("Gezielte Neuverarbeitung benötigt genau ein gruppiertes Dokument")
+            documents[0].id = request.target_document_id
         # Starts as the number of physical source pages and grows if a spread is
         # split.  This keeps the denominator truthful for checkpoints and ETA.
         total_pages = sum(document.page_count for document in documents)
@@ -119,6 +132,36 @@ class ProcessingPipeline:
                 document_script = metadata.script_hint if metadata else request.script_hint
                 if metadata and metadata.title and metadata.title.strip():
                     document.title = metadata.title.strip()
+                original_sources = list(document.source_paths)
+                if progress:
+                    progress(
+                        f"{document.title} · Originale werden sicher in die Bibliothek übernommen",
+                        min(0.03, completed / max(total_pages, 1)),
+                    )
+                existing_managed = self.library.existing_managed_files(self.database, document.id)
+                existing_paths = {
+                    item.managed_path.expanduser().resolve() for item in existing_managed
+                }
+                if (
+                    existing_managed
+                    and {path.expanduser().resolve() for path in original_sources} == existing_paths
+                ):
+                    managed_files = existing_managed
+                else:
+                    managed_files = self.library.adopt_sources(document.id, original_sources)
+                document.source_paths = [item.managed_path for item in managed_files]
+                thumbnail_path = self.library.make_thumbnail(
+                    document.id, document.source_paths[0], 0
+                )
+                self.database.register_document_shell(
+                    job_id, document, document_year, document_script
+                )
+                self.database.mark_document_managed(
+                    document.id,
+                    managed_files,
+                    {str(item.original_path): str(item.managed_path) for item in managed_files},
+                    thumbnail_path,
+                )
                 pages: list[PageResult] = []
                 logical_page_index = 0
                 for source_page_index, source_path, source_image in iter_document_pages(document):
@@ -160,14 +203,13 @@ class ProcessingPipeline:
                             except (ValueError, OSError):
                                 pass
                         prepared_path = (
-                            self.paths.cache
-                            / "logical-pages"
-                            / job_id
-                            / document.id
-                            / f"{page_index:04d}.png"
+                            self.library.prepared_dir(document.id) / f"{page_index:04d}.png"
                         )
                         prepared_path.parent.mkdir(parents=True, exist_ok=True)
                         image.save(prepared_path, format="PNG")
+                        live_preview_path = self.library.make_page_preview(
+                            document.id, page_index, image
+                        )
                         page_share = 1.0 / max(total_pages, 1)
                         page_start = min(0.94, completed / max(total_pages, 1))
                         suffix = (
@@ -176,6 +218,19 @@ class ProcessingPipeline:
                         page_label = (
                             f"{document.title}: Seite {source_page_index + 1}/"
                             f"{document.page_count}{suffix}"
+                        )
+                        self._live(
+                            stage="voranalyse",
+                            document_id=document.id,
+                            document_title=document.title,
+                            page_index=page_index,
+                            page_number=page_index + 1,
+                            page_count=total_pages,
+                            preview_path=str(live_preview_path),
+                            model="Bildanalyse",
+                            width=image.width,
+                            height=image.height,
+                            boxes=[],
                         )
                         self.database.update_job_page(
                             job_id,
@@ -241,6 +296,19 @@ class ProcessingPipeline:
                                 f"{page_label} · lokale OCR-/HTR-Modelle arbeiten",
                                 min(0.94, page_start + 0.30 * page_share),
                             )
+                        self._live(
+                            stage="ocr",
+                            document_id=document.id,
+                            document_title=document.title,
+                            page_index=page_index,
+                            page_number=page_index + 1,
+                            page_count=total_pages,
+                            preview_path=str(live_preview_path),
+                            model="Lokale Modellroute",
+                            width=image.width,
+                            height=image.height,
+                            boxes=[],
+                        )
                         self.database.update_job_page(
                             job_id,
                             document.id,
@@ -269,6 +337,43 @@ class ProcessingPipeline:
                             ]
                             if candidates:
                                 routing_year = max(set(candidates), key=candidates.count)
+                        if routing_script == ScriptHint.PRINT:
+                            route_reason = (
+                                f"Druck/Fraktur wurde mit {probe_confidence:.0%} "
+                                "vorerkannt; spezialisierte Handschriftmodelle werden übersprungen."
+                            )
+                        elif routing_year is not None and routing_year < 1800:
+                            route_reason = (
+                                f"Jahr {routing_year}: frühe Kurrent und CHURRO werden verglichen."
+                            )
+                        elif routing_year is not None and routing_year <= 1945:
+                            route_reason = (
+                                f"Jahr {routing_year}: TrOCR Kurrent des 19./20. Jahrhunderts "
+                                "und CHURRO werden verglichen."
+                            )
+                        else:
+                            route_reason = (
+                                "Keine sichere Datierung: die allgemeine lokale Modellroute "
+                                "entscheidet anhand Schrift und Textqualität."
+                            )
+                        self._live(
+                            stage="modellwahl",
+                            document_id=document.id,
+                            document_title=document.title,
+                            page_index=page_index,
+                            page_number=page_index + 1,
+                            page_count=total_pages,
+                            preview_path=str(live_preview_path),
+                            model="Modelle werden verglichen",
+                            width=image.width,
+                            height=image.height,
+                            boxes=[],
+                            script=preliminary_profile.script.value,
+                            period=preliminary_profile.period.model_dump(mode="json"),
+                            evidence=preliminary_profile.evidence,
+                            reason=route_reason,
+                            print_probe_confidence=probe_confidence,
+                        )
                         candidate = self.router.recognize_variants(
                             selected, routing_year, routing_script
                         )
@@ -291,6 +396,39 @@ class ProcessingPipeline:
                                 f"{page_label} · erkannt mit {candidate.model}",
                                 min(0.94, page_start + 0.82 * page_share),
                             )
+                        self._live(
+                            stage="auswertung",
+                            document_id=document.id,
+                            document_title=document.title,
+                            page_index=page_index,
+                            page_number=page_index + 1,
+                            page_count=total_pages,
+                            preview_path=str(live_preview_path),
+                            model=candidate.model,
+                            width=image.width,
+                            height=image.height,
+                            boxes=[list(line.bbox) for line in candidate.lines[:250]],
+                            confidence=(
+                                sum(line.confidence for line in candidate.lines)
+                                / len(candidate.lines)
+                                if candidate.lines
+                                else 0.0
+                            ),
+                            script=page_profile.script.value,
+                            period=page_profile.period.model_dump(mode="json"),
+                            evidence=page_profile.evidence,
+                            reason=route_reason,
+                            engines=[
+                                {
+                                    "engine": run.engine,
+                                    "backend": run.backend,
+                                    "duration_seconds": run.duration_seconds,
+                                    "success": run.success,
+                                    "message": run.message,
+                                }
+                                for run in (candidate.engine_runs or [])
+                            ],
+                        )
                         warnings: list[str] = list(logical.warnings)
                         if candidate.coverage < 0.35:
                             warnings.append(
@@ -392,6 +530,14 @@ class ProcessingPipeline:
                                 )
                             ],
                             engine_runs=candidate.engine_runs or [],
+                            image_diagnostics=next(
+                                (
+                                    variant.metadata.diagnostics
+                                    for variant in variants
+                                    if variant.metadata.name == candidate.variant
+                                ),
+                                variants[0].metadata.diagnostics if variants else None,
+                            ),
                         )
                         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
                         checkpoint_path.write_text(
@@ -427,18 +573,20 @@ class ProcessingPipeline:
                     script_hint=document_script,
                     pages=pages,
                 )
-                base_output = (
-                    Path(self.settings.output_dir)
-                    if self.settings.output_dir
-                    else self.paths.output
-                )
-                output_dir = base_output / f"{slugify(document.title)}-{document.id[:8]}"
+                output_dir = self.library.derived_dir(document.id)
                 if progress:
                     progress(
                         f"{document.title} · Ausgabedateien werden formatiert",
                         min(0.97, completed / max(total_pages, 1)),
                     )
                 exports.extend(export_document(result, output_dir))
+                if self.settings.output_dir:
+                    external_output = (
+                        Path(self.settings.output_dir)
+                        / f"{slugify(document.title)}-{document.id[:8]}"
+                    )
+                    if external_output.resolve() != output_dir.resolve():
+                        shutil.copytree(output_dir, external_output, dirs_exist_ok=True)
                 if progress:
                     progress(
                         f"{document.title} · Suchindex wird aktualisiert",
@@ -455,6 +603,7 @@ class ProcessingPipeline:
                 progress("Verarbeitung abgeschlossen", 1.0)
             return job_id, results, exports
         except Exception as error:
+            self.database.mark_job_documents_status(job_id, "fehlgeschlagen")
             self.database.update_job(job_id, JobStatus.FAILED, str(error))
             raise
 

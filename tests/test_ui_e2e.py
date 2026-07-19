@@ -157,6 +157,181 @@ def test_search_shows_loading_completion_and_empty_feedback(ui_server) -> None:
         browser.close()
 
 
+def test_archive_lists_documents_without_a_search_term(ui_server) -> None:
+    url, _root = ui_server
+    document = {
+        "id": "archive-document",
+        "title": "Sterbeurkunde Hermann Müller",
+        "year": 1891,
+        "archive": "Stadtarchiv",
+        "fonds": "Standesamt",
+        "shelfmark": "A 42",
+        "page_count": 2,
+        "uncertain_count": 3,
+        "mean_confidence": 0.82,
+        "managed": True,
+        "collection_names": ["Familienforschung"],
+        "thumbnail_url": "/static/missing-thumbnail.jpg",
+    }
+    with playwright.sync_playwright() as runtime:
+        browser = _browser(runtime)
+        page = browser.new_page(viewport={"width": 1100, "height": 800})
+        page.route(
+            "**/api/documents",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps([document])
+            ),
+        )
+        page.route(
+            "**/api/collections",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    [
+                        {
+                            "id": "family",
+                            "name": "Familienforschung",
+                            "document_count": 1,
+                        }
+                    ]
+                ),
+            ),
+        )
+        page.goto(url)
+        page.get_by_role("button", name="Prüfen & suchen").click()
+        page.get_by_text("Sterbeurkunde Hermann Müller").wait_for()
+
+        assert page.locator("#query").input_value() == ""
+        assert page.locator(".document-card").count() == 1
+        assert "3 offen" in page.locator(".document-card").inner_text()
+        assert page.evaluate("document.documentElement.scrollHeight <= window.innerHeight")
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        browser.close()
+
+
+def test_document_reader_shows_scan_transcript_and_readable_version(ui_server) -> None:
+    url, root = ui_server
+    image = root / "reader.png"
+    Image.new("RGB", (320, 240), "white").save(image)
+    document = {
+        "id": "reader-document",
+        "job_id": None,
+        "title": "Brief von Hermann Müller",
+        "year": 1891,
+        "archive": "Stadtarchiv",
+        "fonds": "Nachlass Müller",
+        "shelfmark": "A 42",
+        "document_status": "automatisch",
+        "page_count": 1,
+        "uncertain_count": 1,
+        "mean_confidence": 0.72,
+        "managed": True,
+        "library_managed": True,
+        "collection_names": ["Familienforschung"],
+        "collection_ids": ["family"],
+        "collection_paths": ["Familienforschung"],
+        "thumbnail_url": "/reader-image",
+        "collections": [{"id": "family", "name": "Familienforschung"}],
+        "tags": [],
+        "files": [],
+        "pages": [
+            {
+                "page_index": 0,
+                "thumbnail_url": "/reader-image",
+                "image_url": "/reader-image",
+                "uncertain_count": 1,
+                "line_count": 1,
+                "model": "trocr-kurrent-19",
+                "profile": {"script": "kurrent", "layout": "fliesstext"},
+                "engine_runs": [],
+                "warnings": [],
+            }
+        ],
+    }
+    transcript = {
+        "document_id": "reader-document",
+        "title": document["title"],
+        "line_count": 1,
+        "pages": [
+            {
+                "page_index": 0,
+                "width": 320,
+                "height": 240,
+                "reading_text": "Lieber Hermann, ich schreibe dir heute.",
+                "lines": [
+                    {
+                        "id": "line-1",
+                        "text": "Lieber Hermann, ich schreibe dir heute.",
+                        "bbox": [20, 30, 280, 55],
+                        "polygon": [],
+                        "confidence": 0.72,
+                        "model": "trocr-kurrent-19",
+                        "variant": "normalisiert",
+                        "review_status": "unsicher",
+                        "manually_corrected": False,
+                    }
+                ],
+            }
+        ],
+    }
+    with playwright.sync_playwright() as runtime:
+        browser = _browser(runtime)
+        page = browser.new_page(viewport={"width": 1320, "height": 860})
+        page.route(
+            "**/api/documents/reader-document/transcript",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(transcript)
+            ),
+        )
+        page.route(
+            "**/api/documents/reader-document",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(document)
+            ),
+        )
+        page.route("**/reader-image*", lambda route: route.fulfill(path=image))
+        page.route(
+            "**/api/documents",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps([document])
+            ),
+        )
+        page.route(
+            "**/api/collections",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    [
+                        {
+                            "id": "family",
+                            "name": "Familienforschung",
+                            "path": "Familienforschung",
+                            "depth": 0,
+                            "parent_id": None,
+                            "document_count": 1,
+                            "descendant_document_count": 1,
+                        }
+                    ]
+                ),
+            ),
+        )
+        page.goto(url)
+        page.get_by_role("button", name="Prüfen & suchen").click()
+        page.get_by_text(document["title"], exact=True).click()
+        page.locator(".transcript-line").wait_for()
+
+        assert page.locator(".transcript-line").count() == 1
+        assert page.locator(".document-reader").bounding_box()["y"] < 180
+        page.locator(".transcript-line").click()
+        assert page.locator("#reader-editor").is_visible()
+        page.get_by_role("button", name="Lesefassung").click()
+        assert "Lieber Hermann" in page.locator(".readable-text").inner_text()
+        assert page.evaluate("document.documentElement.scrollHeight <= window.innerHeight")
+        browser.close()
+
+
 def test_system_refresh_shows_an_in_place_loading_state(ui_server) -> None:
     url, _root = ui_server
     with playwright.sync_playwright() as runtime:

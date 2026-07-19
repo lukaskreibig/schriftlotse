@@ -4,6 +4,7 @@ import hashlib
 import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageOps, ImageSequence
 
@@ -12,6 +13,14 @@ from schriftlotse.domain import SourceDocument
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".heic", ".heif", ".webp", ".bmp"}
 TIFF_SUFFIXES = {".tif", ".tiff"}
 PDF_SUFFIXES = {".pdf"}
+GENERIC_TITLE = re.compile(
+    r"^(?:temp(?:orary)?image[\w-]*|image[\w-]*|scan[\s_-]*\d*|document[\s_-]*\d*|img[\s_-]*\d*)$",
+    flags=re.IGNORECASE,
+)
+
+
+def title_needs_review(title: str) -> bool:
+    return not title.strip() or bool(GENERIC_TITLE.fullmatch(title.strip()))
 
 
 def natural_key(path: Path) -> tuple[object, ...]:
@@ -116,8 +125,27 @@ def discover_documents(
 
 def import_preview(sources: Sequence[Path], *, group_images_by_folder: bool = False) -> dict:
     documents = discover_documents(sources, group_images_by_folder=group_images_by_folder)
-    proposals: list[dict[str, object]] = []
+    proposals: list[dict[str, Any]] = []
     for document in documents:
+        source_path = document.source_paths[0]
+        root = next(
+            (
+                candidate.resolve()
+                for candidate in sources
+                if candidate.is_dir()
+                and (
+                    source_path.resolve() == candidate.resolve()
+                    or candidate.resolve() in source_path.resolve().parents
+                )
+            ),
+            None,
+        )
+        relative_folder = ""
+        collection_path: list[str] = []
+        if root is not None:
+            relative = source_path.parent.resolve().relative_to(root)
+            relative_folder = relative.as_posix() if relative.parts else ""
+            collection_path = [root.name, *relative.parts]
         proposals.append(
             {
                 "id": document.id,
@@ -125,6 +153,9 @@ def import_preview(sources: Sequence[Path], *, group_images_by_folder: bool = Fa
                 "kind": document.kind,
                 "pages": document.page_count,
                 "files": [path.name for path in document.source_paths],
+                "relative_folder": relative_folder,
+                "collection_path": collection_path,
+                "title_needs_review": title_needs_review(document.title),
             }
         )
     grouped = discover_documents(sources, group_images_by_folder=True)
@@ -145,17 +176,56 @@ def import_preview(sources: Sequence[Path], *, group_images_by_folder: bool = Fa
             ordered = sorted(paths, key=natural_key)
             suggestions.append(
                 {
+                    "folder": str(paths[0].parent.name),
                     "title": document.title,
                     "pages": len(ordered),
                     "files": [path.name for path in ordered],
                 }
             )
+    supported = IMAGE_SUFFIXES | TIFF_SUFFIXES | PDF_SUFFIXES
+
+    def tree_node(directory: Path, root: Path) -> dict[str, object]:
+        files = sorted(
+            (
+                path
+                for path in directory.iterdir()
+                if path.is_file() and path.suffix.casefold() in supported
+            ),
+            key=natural_key,
+        )
+        children = [
+            tree_node(child, root)
+            for child in sorted(
+                (path for path in directory.iterdir() if path.is_dir()),
+                key=lambda path: path.name.casefold(),
+            )
+        ]
+        return {
+            "name": directory.name,
+            "relative_path": ("" if directory == root else directory.relative_to(root).as_posix()),
+            "files": [path.name for path in files],
+            "file_count": len(files),
+            "document_count": sum(
+                1
+                for proposal in proposals
+                if proposal["collection_path"]
+                and proposal["collection_path"][-1] == directory.name
+                and proposal["relative_folder"]
+                == ("" if directory == root else directory.relative_to(root).as_posix())
+            ),
+            "children": children,
+        }
+
+    trees = [tree_node(source.resolve(), source.resolve()) for source in sources if source.is_dir()]
     return {
         "documents": proposals,
         "document_count": len(proposals),
         "page_count": sum(document.page_count for document in documents),
         "series_suggestions": suggestions,
         "group_images_by_folder": group_images_by_folder,
+        "folder_trees": trees,
+        "preserve_folder_structure": bool(trees),
+        "title_review_count": sum(1 for proposal in proposals if proposal["title_needs_review"]),
     }
 
 

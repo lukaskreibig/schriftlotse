@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>SchriftLotse</title>
-  <link rel="stylesheet" href="/static/style.css?v=workspace-4">
+  <link rel="stylesheet" href="/static/style.css?v=archive-2">
 </head>
 <body>
   <header class="app-header">
@@ -14,7 +14,7 @@
   </header>
   <nav class="tabs" aria-label="Hauptnavigation">
     <button data-tab="read" class="active"><span>1</span> Entziffern</button>
-    <button data-tab="search"><span>2</span> Prüfen & suchen</button>
+    <button data-tab="search" aria-label="Prüfen & suchen"><span>2</span> Archiv & Suche</button>
     <button data-tab="models"><span>3</span> Modelle</button>
     <button data-tab="settings"><span>4</span> Einstellungen</button>
   </nav>
@@ -22,6 +22,10 @@
   <main>
     <section id="read" class="tab active">
       <div class="section-heading"><div><p class="eyebrow">Neuer Auftrag</p><h2>Dokumente entziffern</h2></div><p>Quelle wählen, Qualität festlegen und lokal starten.</p></div>
+      <div id="first-run-guide" class="first-run-guide card" hidden>
+        <div><span class="visually-hidden">Dokumente entziffern</span><p class="eyebrow">Willkommen</p><strong>Was möchtest du zuerst tun?</strong><p>Einzelne Scans landen im Eingang. Ein geordneter Ordner wird als verschachtelte Sammlung übernommen.</p></div>
+        <div class="guide-actions"><button id="guide-file" class="primary">Ein Dokument entziffern</button><button id="guide-folder">Geordneten Archivordner übernehmen</button><button id="guide-library">Bibliothek öffnen</button><button id="dismiss-guide" class="text-button">Einführung schließen</button></div>
+      </div>
       <div id="recovery" class="notice warning" hidden></div>
       <div class="setup-grid">
         <div class="card drop" id="dropzone">
@@ -33,7 +37,8 @@
           <div class="source-head"><strong id="source-count">Noch nichts ausgewählt</strong><button id="clear-sources" class="text-button" hidden>Liste leeren</button></div>
           <div id="sources" class="source-list"></div>
           <div id="import-preview" class="import-preview" role="status" aria-live="polite" hidden></div>
-          <label class="import-option"><input id="group-images" type="checkbox"><span>Bildserien je Ordner zusammenfassen</span></label>
+          <label class="import-option"><input id="group-images" type="checkbox"><span>Alle Bilder eines Ordners als ein Dokument behandeln</span></label>
+          <small class="import-explanation">Ohne Haken bleiben Bilder getrennt. Erkannte Seitenfolgen werden vor dem Start vorgeschlagen.</small>
         </div>
 
         <div class="card settings-card">
@@ -78,25 +83,62 @@
       </div>
 
       <div class="status card" id="status">
-        <div class="status-top"><div><p class="eyebrow">Lokale Verarbeitung</p><strong id="status-message">Bereit für Dokumente</strong></div><span id="status-meta">0 %</span></div>
-        <progress id="progress" max="100" value="0"></progress>
-        <div class="status-foot"><span>🔒 Keine Scans werden hochgeladen</span><button id="cancel" class="danger-text" hidden>Auftrag abbrechen</button></div>
-        <details><summary>Technisches Verarbeitungsprotokoll</summary><pre id="job-log"></pre></details>
-        <div id="exports"></div>
+        <div class="live-status-layout">
+          <div id="live-preview" class="live-preview" hidden><img id="live-image" alt="Aktuell verarbeitete Seite"><svg id="live-overlay" aria-hidden="true"></svg></div>
+          <div class="live-status-copy">
+            <div class="status-top"><div><p class="eyebrow">Lokale Verarbeitung</p><strong id="status-message">Bereit für Dokumente</strong><small id="live-stage"></small></div><span id="status-meta">0 %</span></div>
+            <progress id="progress" max="100" value="0"></progress>
+            <div class="status-foot"><span>🔒 Lokal; Cloud nur nach gewählter Freigabe</span><button id="cancel" class="danger-text" hidden>Auftrag abbrechen</button></div>
+          </div>
+        </div>
+        <section class="processing-log" aria-labelledby="processing-log-title">
+          <div class="processing-log-head"><div><p class="eyebrow">Immer sichtbar</p><strong id="processing-log-title">Technisches Verarbeitungsprotokoll</strong></div><span id="processing-log-count">0 Schritte</span></div>
+          <div id="job-log" class="event-timeline" role="log" aria-live="polite"><div class="event-empty">Nach dem Start erscheinen hier Bildanalyse, Modellwahl und Laufzeiten.</div></div>
+        </section>
+        <div id="job-summary"></div><div id="exports"></div>
       </div>
     </section>
 
     <section id="search" class="tab">
-      <div class="section-heading"><div><p class="eyebrow">Lokales Archiv</p><h2>Prüfen, korrigieren und wiederfinden</h2></div><p>Alle automatischen Lesungen bleiben suchbar. Bestätigte Korrekturen werden zur sichtbaren Fassung.</p></div>
+      <div class="section-heading"><div><p class="eyebrow">Lokale Bibliothek</p><h2>Archiv, Prüfung und Suche</h2></div><p>Dokumente bleiben sichtbar – auch ohne Suchbegriff.</p></div>
+      <div id="migration-notice" class="notice warning migration-notice" hidden><div><strong>Vorhandene Dokumente sicher übernehmen</strong><span id="migration-copy"></span></div><button id="open-migration">Vorschau öffnen</button></div>
       <div class="search-panel card">
         <div class="search-main"><input id="query" placeholder="Name, Ort, Begriff oder Beschreibung …" autocomplete="off"><select id="search-mode"><option value="intelligent">Intelligent</option><option value="namen">Namenssuche</option><option value="exakt">Exakt</option><option value="bedeutung">Bedeutungsähnlich</option></select><button id="search-button" class="primary">Suchen</button></div>
-        <div class="search-options"><label>von Jahr <input id="year-from" type="number" min="800" max="2100"></label><label>bis Jahr <input id="year-to" type="number" min="800" max="2100"></label><label class="range">Ähnlichkeit <input id="fuzziness" type="range" min="45" max="95" value="72"><output id="fuzziness-value">72 %</output></label><button id="review-queue">Unsichere Stellen prüfen</button></div>
+        <div class="search-options"><button id="show-library" class="subtle active">Bibliothek</button><label>von Jahr <input id="year-from" type="number" min="800" max="2100"></label><label>bis Jahr <input id="year-to" type="number" min="800" max="2100"></label><label class="range">Ähnlichkeit <input id="fuzziness" type="range" min="45" max="95" value="72"><output id="fuzziness-value">72 %</output></label><button id="save-search">Suche merken</button></div>
       </div>
-      <div id="archive-summary" class="archive-summary" aria-live="polite"><span class="document-chip loading-chip"><span class="spinner" aria-hidden="true"></span> Archiv wird geladen …</span></div>
-      <div class="review-grid">
-        <div class="card results-card"><div class="panel-title"><h3 id="results-title">Treffer</h3><div class="panel-meta"><span id="search-status" role="status" aria-live="polite">Bereit</span><span id="result-count" class="result-count">0</span></div></div><div class="table-scroll"><table><thead><tr><th>Dokument</th><th>Seite</th><th>Lesung</th><th>Warum</th></tr></thead><tbody id="results"></tbody></table></div><div id="empty-results" class="empty-state">Suche nach einem Namen oder öffne die unsicheren Stellen.</div></div>
-        <div class="card viewer">
-          <div id="viewer-empty" class="empty-state viewer-empty"><span>⌖</span><h3>Fundstelle auswählen</h3><p>Der Scan springt danach direkt zur erkannten Zeile.</p></div>
+      <div class="archive-workspace">
+        <aside class="card archive-sidebar">
+          <div class="archive-side-title"><strong>Bibliothek</strong><button id="new-collection" title="Neue Sammlung" aria-label="Neue Sammlung">＋</button></div>
+          <nav id="archive-navigation" aria-label="Archivansichten">
+            <button data-filter="all" class="active"><span>Alle Dokumente</span><b id="count-all">0</b></button>
+            <button data-filter="eingang"><span>Eingang</span><b id="count-inbox">0</b></button>
+            <button data-filter="processing"><span>In Verarbeitung</span></button>
+            <button data-filter="unsicher"><span>Prüfung erforderlich</span><b id="count-review">0</b></button>
+            <button data-filter="verified"><span>Verifiziert</span></button>
+            <button data-filter="jobs"><span>Verarbeitungsläufe</span></button>
+            <button data-filter="dateiprobleme"><span>Dateiprobleme</span></button>
+            <button data-filter="papierkorb"><span>Papierkorb</span></button>
+          </nav>
+          <button id="review-queue" class="review-queue-button">Offene Stellen abarbeiten</button>
+          <p class="side-label">Archive</p>
+          <div id="archive-list" class="collection-list"></div>
+          <p class="side-label">Sammlungen</p>
+          <div id="collection-list" class="collection-list"><div class="loading-state compact"><span class="spinner"></span></div></div>
+          <p class="side-label">Verknüpfte Ordner</p>
+          <div id="source-folder-list" class="collection-list"><p class="side-empty">Noch kein Ordner verknüpft</p></div>
+          <p class="side-label">Gespeicherte Suchen</p>
+          <div id="saved-search-list" class="collection-list"></div>
+          <button id="verify-library" class="integrity-button">Bibliothek prüfen</button>
+        </aside>
+        <div class="card archive-center">
+          <div class="panel-title"><div><h3 id="results-title">Dokumente</h3><span id="search-status" role="status" aria-live="polite">Archiv wird geladen …</span></div><div class="panel-meta"><select id="archive-sort" aria-label="Dokumente sortieren"><option value="recent">Neueste</option><option value="title">Titel</option><option value="year-asc">Jahr ↑</option><option value="year-desc">Jahr ↓</option><option value="archive">Archiv</option></select><button id="archive-grid-toggle" title="Ansicht wechseln">▦</button><span id="result-count" class="result-count">0</span></div></div>
+          <div id="archive-summary" class="archive-summary" aria-live="polite"></div>
+          <div id="document-browser" class="document-browser" aria-live="polite"><div class="loading-state"><span class="spinner"></span>Dokumente werden geladen …</div></div>
+          <div id="search-results-view" class="search-results-view" hidden><div class="table-scroll"><table><thead><tr><th>Dokument</th><th>Seite</th><th>Lesung</th><th>Warum</th></tr></thead><tbody id="results"></tbody></table></div><div id="empty-results" class="empty-state">Keine Treffer.</div></div>
+        </div>
+        <div class="card viewer archive-viewer">
+          <div id="viewer-empty" class="empty-state viewer-empty"><span>⌖</span><h3>Dokument oder Fundstelle auswählen</h3><p>Hier erscheinen Seiten, Archivangaben, Lesungen und der technische Bericht.</p></div>
+          <div id="document-detail" class="document-detail" hidden></div>
           <div id="viewer-content" hidden>
             <div class="canvas-wrap" id="scan-wrap"><img id="scan" alt="Fundstelle im Originalscan"><canvas id="overlay"></canvas><div id="scan-status" class="scan-status" role="status" aria-live="polite" hidden></div></div>
             <div class="viewer-heading"><div><p class="eyebrow">Ausgewählte Fundstelle</p><h3 id="hit-title">Fundstelle</h3></div><span id="hit-confidence"></span></div>
@@ -151,7 +193,10 @@
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <dialog id="confirm-dialog"><form method="dialog"><h3 id="confirm-title">Bitte bestätigen</h3><p id="confirm-copy"></p><div class="button-row"><button value="cancel">Abbrechen</button><button value="confirm" class="primary">Bestätigen</button></div></form></dialog>
-  <dialog id="import-dialog" class="import-dialog"><form method="dialog"><div class="panel-title"><div><p class="eyebrow">Importvorschau</p><h3>Dokumente und Metadaten prüfen</h3></div><span id="import-dialog-count"></span></div><p class="hint">Jahr und Schrift gelten nur für das jeweilige Dokument. Leere Jahre werden später vorsichtig vorerkannt.</p><div class="import-table-wrap"><table><thead><tr><th>Dokument</th><th>Jahr</th><th>Schrift</th></tr></thead><tbody id="import-documents"></tbody></table></div><div class="button-row"><button value="cancel">Abbrechen</button><button value="confirm" class="primary">Übernehmen</button></div></form></dialog>
-  <script src="/static/app.js?v=workspace-5"></script>
+  <dialog id="import-dialog" class="import-dialog"><form method="dialog"><div class="panel-title"><div><p class="eyebrow">Importvorschau</p><h3>Ordnung und Dokumente prüfen</h3></div><span id="import-dialog-count"></span></div><div id="import-tree-summary" class="import-tree-summary" hidden></div><p class="hint">Ordner werden als verschachtelte Sammlungen übernommen. Jahr und Schrift dürfen leer bleiben und werden dann vorsichtig vorerkannt.</p><div class="import-table-wrap"><table><thead><tr><th>Dokument und Sammlung</th><th>Jahr</th><th>Schrift</th></tr></thead><tbody id="import-documents"></tbody></table></div><div class="button-row"><button value="cancel">Abbrechen</button><button value="confirm" class="primary">Übernehmen</button></div></form></dialog>
+  <dialog id="migration-dialog" class="import-dialog"><form method="dialog"><div class="panel-title"><div><p class="eyebrow">Sichere Bibliothek</p><h3>Vorhandene Dokumente übernehmen</h3></div><span id="migration-size"></span></div><p class="hint">Originale werden kopiert und per SHA-256 geprüft. Bestehende Quelldateien werden nicht verändert oder gelöscht.</p><div id="migration-list" class="migration-list"></div><div class="button-row"><button value="cancel">Später</button><button id="run-migration" value="confirm" class="primary">Auswahl übernehmen</button></div></form></dialog>
+  <dialog id="collection-dialog"><form method="dialog"><h3 id="collection-dialog-title">Neue Sammlung</h3><label>Name<input id="collection-name" maxlength="120" autocomplete="off"></label><label>Unterhalb von<select id="collection-parent"><option value="">Bibliothek (oberste Ebene)</option></select></label><label>Beschreibung <small>optional</small><textarea id="collection-description" rows="3"></textarea></label><div class="button-row"><button id="delete-collection" type="button" class="danger-text" hidden>Sammlung löschen</button><span class="dialog-spacer"></span><button value="cancel">Abbrechen</button><button id="save-collection" value="confirm" class="primary">Anlegen</button></div></form></dialog>
+  <dialog id="source-sync-dialog" class="import-dialog"><form method="dialog"><div class="panel-title"><div><p class="eyebrow">Manueller Abgleich</p><h3 id="source-sync-title">Ordneränderungen prüfen</h3></div><span id="source-sync-count"></span></div><div id="source-sync-content" class="migration-list"></div><div class="button-row"><button value="cancel">Schließen</button><button id="prepare-source-sync" value="confirm" class="primary">Auswahl zum Entziffern übernehmen</button></div></form></dialog>
+  <script src="/static/app.js?v=archive-2"></script>
 </body>
 </html>

@@ -312,7 +312,11 @@ def export_document(result: DocumentResult, output_dir: Path) -> list[Path]:
     image_files: list[Path] = []
     for page in result.pages:
         image_path = images_dir / f"seite_{page.page_index + 1:04d}.png"
-        source_image = page.prepared_path or page.source_path
+        source_image = (
+            page.prepared_path
+            if page.prepared_path is not None and page.prepared_path.is_file()
+            else page.source_path
+        )
         if source_image.suffix.lower() == ".png":
             shutil.copy2(source_image, image_path)
         else:
