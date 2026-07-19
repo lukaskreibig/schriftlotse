@@ -63,7 +63,10 @@ SUPPORTED_SOURCE_SUFFIXES = IMAGE_SUFFIXES | TIFF_SUFFIXES | PDF_SUFFIXES
 def _authorized_native_source(raw_path: str) -> Path | None:
     """Resolve a native picker result inside a deliberately allowed local root."""
     try:
-        candidate = Path(raw_path).expanduser().resolve(strict=True)
+        # `raw_path` comes from NSOpenPanel, requires the per-process instance
+        # token, and is reconstructed below only after containment in a trusted
+        # root. Accepting that selected path is the purpose of this endpoint.
+        candidate = Path(raw_path).expanduser().resolve(strict=True)  # lgtm[py/path-injection]
     except (OSError, RuntimeError):
         return None
     roots = [Path.home(), Path(tempfile.gettempdir()), Path("/Volumes")]
@@ -709,7 +712,7 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
     def native_sources(payload: NativeSourcesPayload, request: Request) -> dict[str, Any]:
         expected = os.getenv("SCHRIFTLOTSE_INSTANCE_TOKEN", "")
         supplied = request.headers.get("x-schriftlotse-instance", "")
-        if not expected or supplied != expected:
+        if not expected or not hmac.compare_digest(supplied, expected):
             raise HTTPException(status_code=403, detail="Native Dateiauswahl nicht autorisiert")
         sources: list[dict[str, str]] = []
         for raw_path in payload.paths:
