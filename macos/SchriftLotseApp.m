@@ -192,17 +192,17 @@
     }
     __weak typeof(self) weakSelf = self;
     NSURL *healthURL = [self.localURL URLByAppendingPathComponent:@"api/health"];
+    NSMutableURLRequest *healthRequest = [NSMutableURLRequest requestWithURL:healthURL];
+    [healthRequest setValue:self.instanceToken forHTTPHeaderField:@"x-schriftlotse-instance"];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
-        dataTaskWithURL:healthURL
+        dataTaskWithRequest:healthRequest
       completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         (void)error;
         SchriftLotseDelegate *selfRef = weakSelf;
         if (!selfRef) return;
         NSInteger status = [(NSHTTPURLResponse *)response statusCode];
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSDictionary *health = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-            BOOL correctInstance = [health[@"instance_token"] isEqualToString:selfRef.instanceToken];
-            if (status == 200 && correctInstance) {
+            if (status == 200) {
                 [selfRef.webView loadRequest:[NSURLRequest requestWithURL:selfRef.localURL]];
             } else {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),

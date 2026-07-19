@@ -69,15 +69,25 @@ def test_runtime_exposes_structured_low_overhead_live_preview(tmp_path) -> None:
 
 
 def test_local_health_probe() -> None:
-    route = next(
-        route for route in create_app().routes if getattr(route, "path", "") == "/api/health"
-    )
-    assert route.endpoint() == {
+    assert TestClient(create_app()).get("/api/health").json() == {
         "status": "bereit",
         "local": True,
         "version": "0.2.0",
-        "instance_token": "browser",
     }
+
+
+def test_native_health_probe_requires_current_instance_token(monkeypatch) -> None:
+    monkeypatch.setenv("SCHRIFTLOTSE_INSTANCE_TOKEN", "native-health-token")
+    client = TestClient(create_app())
+
+    assert client.get("/api/health").status_code == 403
+    accepted = client.get(
+        "/api/health",
+        headers={"x-schriftlotse-instance": "native-health-token"},
+    )
+
+    assert accepted.status_code == 200
+    assert "instance_token" not in accepted.json()
 
 
 def test_settings_api_persists_visible_configuration(monkeypatch, app_paths) -> None:
@@ -200,6 +210,13 @@ def test_native_source_registration_requires_current_instance_token(
     assert denied.status_code == 403
     assert accepted.status_code == 200
     assert accepted.json()["sources"][0]["name"] == "Echter Dateiname.jpg"
+
+    outside_allowed_roots = client.post(
+        "/api/native-sources",
+        json={"paths": ["/etc/passwd"]},
+        headers={"x-schriftlotse-instance": "native-test-token"},
+    )
+    assert outside_allowed_roots.status_code == 400
 
 
 def test_folder_mapping_creates_nested_collections_and_linked_source(

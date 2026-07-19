@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hmac
 import json
+import logging
 import os
 import queue
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -52,6 +55,34 @@ from schriftlotse.model_registry import MODELS, ModelManager
 from schriftlotse.pipeline import ProcessingPipeline
 from schriftlotse.preprocessing import generate_variants
 from schriftlotse.search import ArchiveSearch
+
+LOGGER = logging.getLogger(__name__)
+SUPPORTED_SOURCE_SUFFIXES = IMAGE_SUFFIXES | TIFF_SUFFIXES | PDF_SUFFIXES
+
+
+def _authorized_native_source(raw_path: str) -> Path | None:
+    """Resolve a native picker result inside a deliberately allowed local root."""
+    try:
+        candidate = Path(raw_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    roots = [Path.home(), Path(tempfile.gettempdir()), Path("/Volumes")]
+    for untrusted_root in roots:
+        try:
+            root = untrusted_root.resolve(strict=True)
+            relative = candidate.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if not relative.parts:
+            return None
+        # Rebuild the path from a trusted root after the containment check so
+        # request data can never become an unrestricted filesystem expression.
+        authorized = (root / relative).resolve(strict=True)
+        if authorized.is_file() and authorized.suffix.casefold() not in SUPPORTED_SOURCE_SUFFIXES:
+            return None
+        if authorized.is_file() or authorized.is_dir():
+            return authorized
+    return None
 
 
 class JobPayload(BaseModel):
@@ -640,13 +671,16 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
         return templates.get_template("index.html").render()
 
     @app.get("/api/health")
-    def health() -> dict[str, Any]:
+    def health(request: Request) -> dict[str, Any]:
         """Small local readiness probe for the native wrapper and diagnostics."""
+        expected = os.getenv("SCHRIFTLOTSE_INSTANCE_TOKEN", "")
+        supplied = request.headers.get("x-schriftlotse-instance", "")
+        if expected and not hmac.compare_digest(supplied, expected):
+            raise HTTPException(status_code=403, detail="Falsche lokale App-Instanz")
         return {
             "status": "bereit",
             "local": True,
             "version": "0.2.0",
-            "instance_token": os.getenv("SCHRIFTLOTSE_INSTANCE_TOKEN", "browser"),
         }
 
     @app.post("/api/uploads")
@@ -679,8 +713,8 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="Native Dateiauswahl nicht autorisiert")
         sources: list[dict[str, str]] = []
         for raw_path in payload.paths:
-            path = Path(raw_path).expanduser().resolve()
-            if not path.exists() or (not path.is_file() and not path.is_dir()):
+            path = _authorized_native_source(raw_path)
+            if path is None:
                 continue
             sources.append(app_state.register_source(path, path.name))
         if not sources:
@@ -1291,9 +1325,14 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
                 try:
                     expanded.extend(app_state.database.split_document_into_pages(document_id))
                 except (KeyError, sqlite3.DatabaseError) as error:
+                    LOGGER.warning(
+                        "Dokumentgruppe %s konnte nicht getrennt werden",
+                        document_id,
+                        exc_info=True,
+                    )
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Dokumentgruppe konnte nicht getrennt werden: {error}",
+                        detail="Dokumentgruppe konnte nicht getrennt werden",
                     ) from error
             else:
                 expanded.append(document_id)
@@ -1304,8 +1343,18 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
                 migrated.append(
                     app_state.library.adopt_existing_document(app_state.database, document_id)
                 )
-            except (KeyError, OSError, ValueError) as error:
-                errors.append({"document_id": document_id, "error": str(error)})
+            except (KeyError, OSError, ValueError):
+                LOGGER.warning(
+                    "Dokument %s konnte nicht übernommen werden",
+                    document_id,
+                    exc_info=True,
+                )
+                errors.append(
+                    {
+                        "document_id": document_id,
+                        "error": "Original konnte nicht in die Bibliothek übernommen werden",
+                    }
+                )
         return {"migrated": migrated, "errors": errors, "library": str(app_state.library.root)}
 
     @app.post("/api/library/integrity")
