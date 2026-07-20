@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -9,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from schriftlotse.cloud import cloud_transcription_issues
 from schriftlotse.domain import (
     AlternativeReading,
     DocumentResult,
@@ -907,7 +909,7 @@ class Database:
             return db.execute(
                 """
                 SELECT l.*, d.title, d.year, p.source_path, p.source_page_index,
-                       p.prepared_path, p.source_bbox, p.transform, p.width, p.height
+                       p.prepared_path, p.source_bbox, p.transform, p.profile,p.width,p.height
                 FROM lines l
                 JOIN documents d ON d.id=l.document_id
                 JOIN pages p ON p.document_id=l.document_id AND p.page_index=l.page_index
@@ -972,7 +974,7 @@ class Database:
             "SELECT COUNT(*) AS verified_lines,COUNT(DISTINCT document_id) AS documents "
             "FROM lines WHERE manually_corrected=1"
         )[0]
-        return {key: int(row[key] or 0) for key in row}
+        return {key: int(value or 0) for key, value in dict(row).items()}
 
     def review_queue(self, limit: int = 100) -> list[sqlite3.Row]:
         return self.rows(
@@ -1653,32 +1655,149 @@ class Database:
                 item["bbox"] = json.loads(item["bbox"] or "[]")
                 item["polygon"] = json.loads(item["polygon"] or "[]")
                 item["manually_corrected"] = bool(item["manually_corrected"])
-                item["readings"] = [
-                    dict(reading) for reading in self.line_readings(str(item["id"]))
-                ]
+                item["readings"] = []
+                for reading in self.line_readings(str(item["id"])):
+                    reading_item = dict(reading)
+                    reading_item["quality_issues"] = (
+                        cloud_transcription_issues(reading_item["text"], item["text"])
+                        if reading_item["kind"] == ReadingKind.CLOUD.value
+                        else []
+                    )
+                    item["readings"].append(reading_item)
                 line_items.append(item)
-            reading = "\n".join(item["text"] for item in line_items)
-            # The readable version is intentionally conservative: it repairs
-            # layout artefacts but does not modernise historic German.
-            import re
-
-            reading = re.sub(r"(?<=\w)-\n(?=[a-zäöüß])", "", reading)
-            reading = re.sub(r"(?<!\n)\n(?!\n)", " ", reading)
-            reading = re.sub(r"[ \t]+", " ", reading).strip()
+            readable = self._readable_text([item["text"] for item in line_items])
             result_pages.append(
                 {
                     "page_index": int(page["page_index"]),
                     "width": int(page["width"]),
                     "height": int(page["height"]),
                     "lines": line_items,
-                    "reading_text": reading,
+                    "reading_text": readable,
                 }
             )
+        model_versions = self._document_model_versions(result_pages)
         return {
             "document_id": document_id,
             "title": document["title"],
             "pages": result_pages,
             "line_count": sum(len(page["lines"]) for page in result_pages),
+            "cloud_summary": self._document_cloud_summary(document_id, document["job_id"]),
+            "model_versions": model_versions,
+        }
+
+    @staticmethod
+    def _readable_text(lines: list[str]) -> str:
+        """Repair layout artefacts without modernising historic German."""
+        reading = "\n".join(lines)
+        reading = re.sub(r"(?<=\w)-\n(?=[a-zäöüß])", "", reading)
+        reading = re.sub(r"(?<!\n)\n(?!\n)", " ", reading)
+        return re.sub(r"[ \t]+", " ", reading).strip()
+
+    def _document_model_versions(self, pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        model_names = sorted(
+            {
+                str(reading["model"])
+                for page in pages
+                for line in page["lines"]
+                for reading in line["readings"]
+                if reading.get("model") and reading.get("text")
+            }
+        )
+        total_lines = sum(len(page["lines"]) for page in pages)
+        versions: list[dict[str, Any]] = []
+        for model in model_names:
+            covered = 0
+            changed = 0
+            flagged = 0
+            character_count = 0
+            version_pages: list[dict[str, Any]] = []
+            kinds: set[str] = set()
+            for page in pages:
+                version_lines: list[str] = []
+                page_covered = 0
+                for line in page["lines"]:
+                    matching = [
+                        reading
+                        for reading in line["readings"]
+                        if reading.get("model") == model and reading.get("text")
+                    ]
+                    if matching:
+                        chosen = matching[0]
+                        text = str(chosen["text"])
+                        kinds.add(str(chosen["kind"]))
+                        covered += 1
+                        page_covered += 1
+                        changed += int(text != line["text"])
+                        flagged += int(bool(chosen.get("quality_issues")))
+                        character_count += len(text.strip())
+                        version_lines.append(text)
+                version_pages.append(
+                    {
+                        "page_index": page["page_index"],
+                        "reading_text": self._readable_text(version_lines),
+                        "covered_lines": page_covered,
+                        "total_lines": len(page["lines"]),
+                    }
+                )
+            average_characters = character_count / covered if covered else 0.0
+            quality_notes: list[str] = []
+            if covered >= 5 and average_characters < 3:
+                quality_notes.append("ungewöhnlich kurze, wahrscheinlich unbrauchbare Lesungen")
+            if flagged:
+                quality_notes.append("formal auffällige Cloud-Ausgaben enthalten")
+            versions.append(
+                {
+                    "id": model,
+                    "model": model,
+                    "kinds": sorted(kinds),
+                    "covered_lines": covered,
+                    "total_lines": total_lines,
+                    "changed_lines": changed,
+                    "quality_issue_lines": flagged,
+                    "average_characters_per_line": average_characters,
+                    "quality_notes": quality_notes,
+                    "complete": bool(total_lines and covered == total_lines),
+                    "pages": version_pages,
+                }
+            )
+        return sorted(
+            versions,
+            key=lambda item: (
+                bool(item["quality_notes"]),
+                -int(item["covered_lines"]),
+                str(item["model"]),
+            ),
+        )
+
+    def _document_cloud_summary(self, document_id: str, job_id: str | None) -> dict[str, Any]:
+        models = self.rows(
+            """
+            SELECT r.model,COUNT(*) AS reading_count,COUNT(DISTINCT r.line_id) AS line_count
+            FROM readings r JOIN lines l ON l.id=r.line_id
+            WHERE l.document_id=? AND r.kind='cloud'
+            GROUP BY r.model ORDER BY reading_count DESC,r.model
+            """,
+            (document_id,),
+        )
+        line_count = self.rows(
+            "SELECT COUNT(DISTINCT r.line_id) AS amount FROM readings r "
+            "JOIN lines l ON l.id=r.line_id WHERE l.document_id=? AND r.kind='cloud'",
+            (document_id,),
+        )[0]["amount"]
+        usage = self.rows(
+            "SELECT COUNT(*) AS requests,COALESCE(SUM(cost_usd),0) AS cost_usd,"
+            "SUM(CASE WHEN status='fehlgeschlagen' THEN 1 ELSE 0 END) AS failed_requests "
+            "FROM cloud_usage WHERE (? IS NOT NULL AND job_id=?) OR line_id IN "
+            "(SELECT id FROM lines WHERE document_id=?)",
+            (job_id, job_id, document_id),
+        )[0]
+        return {
+            "reading_count": sum(int(row["reading_count"]) for row in models),
+            "line_count": int(line_count or 0),
+            "models": [dict(row) for row in models],
+            "requests": int(usage["requests"] or 0),
+            "cost_usd": float(usage["cost_usd"] or 0),
+            "failed_requests": int(usage["failed_requests"] or 0),
         }
 
     def document_detail(self, document_id: str) -> dict[str, Any] | None:

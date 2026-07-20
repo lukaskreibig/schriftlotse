@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -14,6 +15,8 @@ from schriftlotse.domain import (
     ImageDiagnostics,
     LineResult,
     PageResult,
+    Reading,
+    ReadingKind,
     ScriptHint,
     SourceDocument,
 )
@@ -89,6 +92,68 @@ def test_managed_library_copies_original_and_verifies_fixity(app_paths) -> None:
     assert library.verify_document(database, "document-1")["problems"][0]["status"] == "verändert"
     assert library.repair_document(database, "document-1")["repaired"] == ["Hermann.jpg"]
     assert library.verify_document(database, "document-1")["problems"] == []
+
+
+def test_transcript_exposes_model_versions_cloud_cost_and_format_warnings(app_paths) -> None:
+    scan = app_paths.cache / "versions.png"
+    scan.parent.mkdir(parents=True)
+    Image.new("RGB", (320, 240), "white").save(scan)
+    database = Database(app_paths.database)
+    database.create_job("versions-job")
+    database.save_document("versions-job", _result(scan, "versions-document"))
+    line_id = "versions-document-0000-0000"
+    database.add_reading(
+        line_id,
+        Reading(
+            id=f"{line_id}:cloud:test",
+            kind=ReadingKind.CLOUD,
+            text="Wait, I think this reads Hermann Mueller.",
+            model="google/gemini-3.5-flash",
+            confidence=0.5,
+        ),
+    )
+    database.record_cloud_usage(
+        job_id="versions-job",
+        line_id=line_id,
+        model="google/gemini-3.5-flash",
+        profile="fast",
+        cost_usd=0.0123,
+        duration_seconds=2.0,
+        status="erfolgreich",
+    )
+
+    transcript = database.document_transcript("versions-document")
+
+    assert transcript is not None
+    assert transcript["cloud_summary"]["line_count"] == 1
+    assert transcript["cloud_summary"]["cost_usd"] == pytest.approx(0.0123)
+    version = next(
+        item
+        for item in transcript["model_versions"]
+        if item["model"] == "google/gemini-3.5-flash"
+    )
+    assert version["covered_lines"] == 1
+    assert version["complete"] is True
+    assert version["quality_issue_lines"] == 1
+    cloud = next(
+        item
+        for item in transcript["pages"][0]["lines"][0]["readings"]
+        if item["kind"] == "cloud"
+    )
+    assert "Modell-Erklärung" in cloud["quality_issues"][0]
+
+
+def test_ground_truth_stats_uses_named_sqlite_columns(app_paths) -> None:
+    scan = app_paths.cache / "verified.png"
+    scan.parent.mkdir(parents=True)
+    Image.new("RGB", (320, 240), "white").save(scan)
+    database = Database(app_paths.database)
+    database.create_job("verified-job")
+    database.save_document("verified-job", _result(scan, "verified-document"))
+
+    assert database.ground_truth_stats() == {"verified_lines": 0, "documents": 0}
+    database.update_line("verified-document-0000-0000", "Hermann Müller")
+    assert database.ground_truth_stats() == {"verified_lines": 1, "documents": 1}
 
 
 def test_reprocessing_preserves_archive_metadata_and_collections(app_paths) -> None:

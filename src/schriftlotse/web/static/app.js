@@ -935,33 +935,44 @@ async function showDocument(documentId) {
   const pages = documentData.pages || [];
   const selectedCollections = new Set((documentData.collections || []).map(item => item.id));
   const inbox = !selectedCollections.size;
+  const deleted = Boolean(documentData.deleted_at);
+  const cloudSummary = transcript.cloud_summary || { line_count: 0, models: [], cost_usd: 0 };
+  const localModelLabels = { 'trocr-kurrent-19': 'TrOCR Kurrent 19. Jh.', 'trocr-kurrent-early': 'TrOCR Kurrent 16.–18. Jh.', 'churro-mlx-8bit': 'CHURRO MLX 8-Bit', 'ub-german-handwriting': 'Kraken · UB deutsche Handschrift', 'party-v4': 'Kraken Party v4', manuell: 'Manuell bestätigte Fassung' };
+  const cloudModelLabel = model => state.cloudModels.find(option => option.model === model)?.label || localModelLabels[model] || model;
+  const cloudModelNames = (cloudSummary.models || []).map(item => cloudModelLabel(item.model)).join(', ');
+  const modelVersions = transcript.model_versions || [];
+  const cloudIssueCount = transcript.pages.flatMap(page => page.lines).flatMap(line => line.readings || []).filter(reading => reading.kind === 'cloud' && (reading.quality_issues || []).length).length;
   $('document-detail').innerHTML = `
     <div class="document-reader">
       <header class="reader-toolbar">
         <button id="reader-back" class="text-button">← Bibliothek</button>
         <div class="reader-title"><small>${esc((documentData.collections || []).map(item => item.name).join(' / ') || 'Eingang')}</small><strong>${esc(documentData.title)}</strong></div>
         <span class="reader-status ${Number(documentData.pages?.reduce((sum, page) => sum + Number(page.uncertain_count || 0), 0)) ? 'needs-review' : ''}">${transcript.line_count} Zeilen · ${documentData.pages?.reduce((sum, page) => sum + Number(page.uncertain_count || 0), 0) || 0} offen</span>
-        <button id="reader-export">Exportieren</button>
+        <div class="reader-toolbar-actions">${deleted ? '<button id="reader-restore" class="primary">Wiederherstellen</button><button id="reader-purge" class="danger-text">Endgültig löschen</button>' : '<button id="reader-trash" class="danger-text">In Papierkorb</button><button id="reader-export">Exportieren</button>'}</div>
       </header>
+      ${deleted ? `<div class="reader-notice deleted"><strong>Im Papierkorb</strong><span>Gelöscht am ${esc(documentData.deleted_at)}. Du kannst das Dokument wiederherstellen oder endgültig entfernen.</span></div>` : ''}
       ${documentData.title_needs_review || /^temp(?:orary)?image/i.test(documentData.title) ? '<div class="reader-notice warning"><strong>Titel prüfen</strong><span>macOS hat nur einen temporären Bildnamen übermittelt. Unter „Details“ kannst du einen passenden Titel vergeben.</span></div>' : ''}
-      ${inbox ? '<div class="reader-notice"><strong>Noch im Eingang</strong><span>Die Entzifferung ist fertig. Ordne das Dokument unter „Details“ einer Sammlung zu.</span><button id="reader-file-document">Jetzt ablegen</button></div>' : ''}
-      <nav class="reader-tabs"><button data-reader-tab="read" class="active">Lesen</button><button data-reader-tab="review">Prüfen</button><button data-reader-tab="details">Details & Technik</button></nav>
+      ${inbox && !deleted ? '<div class="reader-notice"><strong>Noch im Eingang</strong><span>Die Entzifferung ist fertig. Ordne das Dokument unter „Details“ einer Sammlung zu.</span><button id="reader-file-document">Jetzt ablegen</button></div>' : ''}
+      ${cloudSummary.line_count ? `<div class="reader-notice cloud ${cloudIssueCount ? 'warning' : ''}"><strong>Cloud-Zweitprüfung</strong><span>${cloudSummary.line_count} von ${transcript.line_count} Zeilen mit ${esc(cloudModelNames)} geprüft · $${Number(cloudSummary.cost_usd || 0).toFixed(5)}. Die lokale Hauptlesung wurde nicht automatisch ersetzt.${cloudIssueCount ? ` ${cloudIssueCount} ältere Ausgabe${cloudIssueCount === 1 ? '' : 'n'} ist/sind formal auffällig.` : ''}</span><button data-open-cloud-comparison>Vergleichen</button></div>` : ''}
+      <nav class="reader-tabs"><button data-reader-tab="read" class="active">Lesen</button><button data-reader-tab="review">Prüfen</button>${cloudSummary.line_count ? `<button data-reader-tab="cloud">Cloud-Vergleich <b>${cloudSummary.line_count}</b></button>` : ''}<button data-reader-tab="details">Details & Technik</button></nav>
       <section id="reader-reading" class="reader-panel active">
         <aside class="reader-pages">${pages.map(page => `<button data-reader-page="${page.page_index}" title="Seite ${Number(page.page_index) + 1}"><img src="${esc(page.thumbnail_url)}" alt=""><span>${Number(page.page_index) + 1}</span></button>`).join('')}</aside>
         <div class="reader-scan"><div class="reader-scan-toolbar"><span id="reader-page-label">Seite 1 von ${pages.length}</span><div><button data-image-view="original" class="active">Original</button><button data-image-view="prepared">Aufbereitet</button></div></div><div class="reader-scan-canvas"><img id="reader-scan-image" alt="Ausgewählte Originalseite"><canvas id="reader-line-overlay"></canvas></div></div>
-        <div class="reader-text"><div class="reader-text-toolbar"><div><button data-text-view="diplomatic" class="active">Transkription</button><button data-text-view="reading">Lesefassung</button></div><button id="next-uncertain">Nächste unsichere Stelle</button></div><div id="reader-lines" class="reader-lines"></div><div id="reader-editor" class="reader-editor" hidden><label>Zeile korrigieren<textarea id="reader-line-text" rows="3"></textarea></label><div id="reader-alternatives" class="reader-alternatives"></div><div class="button-row"><button id="reader-save-line" class="primary">Korrektur bestätigen</button><button id="reader-cancel-line">Schließen</button></div><div id="reader-edit-status" class="status-copy"></div></div></div>
+        <div class="reader-text"><div class="reader-text-toolbar"><div class="reader-view-controls"><button data-text-view="diplomatic" class="active">Transkription</button><button data-text-view="reading">Lesefassung</button><button data-text-view="document">Gesamtdokument</button></div><label id="reader-version-control" class="reader-version-control" hidden>Fassung<select id="reader-version"><option value="">Hauptlesung · ausgewählt</option>${modelVersions.map(version => `<option value="${esc(version.id)}">${esc(cloudModelLabel(version.model))} · ${version.covered_lines}/${version.total_lines}${version.complete ? '' : ' Teilfassung'}${(version.quality_notes || []).length ? ' ⚠' : ''}</option>`).join('')}</select></label><button id="next-uncertain">Nächste unsichere Stelle</button></div><div id="reader-lines" class="reader-lines"></div><div id="reader-editor" class="reader-editor" hidden><label>Zeile korrigieren<textarea id="reader-line-text" rows="3"></textarea></label><div id="reader-alternatives" class="reader-alternatives"></div><div class="button-row"><button id="reader-save-line" class="primary">Korrektur bestätigen</button><button id="reader-cancel-line">Schließen</button></div><div id="reader-edit-status" class="status-copy"></div></div></div>
       </section>
       <section id="reader-details" class="reader-panel">
         <div class="reader-details-grid"><div class="details-form"><h3>Ordnung und Archivangaben</h3><div class="metadata-grid">
           <label class="wide">Titel<input data-meta="title" value="${esc(documentData.title)}"></label><label>Jahr<input data-meta="year" type="number" min="800" max="2100" value="${documentData.year || ''}"></label><label>Archiv<input data-meta="archive" value="${esc(documentData.archive || '')}"></label><label>Bestand<input data-meta="fonds" value="${esc(documentData.fonds || '')}"></label><label>Signatur<input data-meta="shelfmark" value="${esc(documentData.shelfmark || '')}"></label><label>Serie<input data-meta="series" value="${esc(documentData.series || '')}"></label><label>Ort<input data-meta="place" value="${esc(documentData.place || '')}"></label><label class="wide">Tags<input data-tags value="${esc((documentData.tags || []).join(', '))}"></label><label class="wide">Beschreibung<textarea data-meta="description" rows="3">${esc(documentData.description || '')}</textarea></label><label class="wide">Notizen<textarea data-meta="notes" rows="3">${esc(documentData.notes || '')}</textarea></label>
-        </div><h4>Sammlungen</h4><div class="collection-checks collection-tree-checks">${state.collections.map(collection => `<label style="--collection-depth:${Number(collection.depth || 0)}"><input type="checkbox" data-collection-id="${collection.id}" ${selectedCollections.has(collection.id) ? 'checked' : ''}>${esc(collection.path)}</label>`).join('') || '<small>Noch keine Sammlung angelegt</small>'}</div><input type="hidden" data-document-status value="${esc(documentData.document_status || 'automatisch')}"><button id="save-document-meta" class="primary">Änderungen speichern</button></div>
-        <div class="details-technical"><h3>Technischer Bericht</h3><div id="technical-page-report">${technicalPageMarkup(pages[0] || {})}</div><h4>Verarbeitungslauf</h4><div class="stored-event-list">${history.length ? history.map(event => `<div><span>${esc(event.created_at)}</span><strong>${esc(event.message)}</strong>${event.payload?.reason ? `<small>${esc(event.payload.reason)}</small>` : ''}</div>`).join('') : '<p class="hint">Für diesen älteren Lauf ist kein Detailprotokoll gespeichert.</p>'}</div><div class="detail-actions"><button id="detail-reprocess">Erneut verarbeiten</button><button id="detail-integrity">Original prüfen</button><button id="detail-finder">Im Finder</button><button id="detail-trash" class="danger-text">Papierkorb</button></div></div></div>
+        </div><h4>Sammlungen</h4><div class="collection-checks collection-tree-checks">${state.collections.map(collection => `<label style="--collection-depth:${Number(collection.depth || 0)}"><input type="checkbox" data-collection-id="${collection.id}" ${selectedCollections.has(collection.id) ? 'checked' : ''}>${esc(collection.path)}</label>`).join('') || '<small>Noch keine Sammlung angelegt</small>'}</div><input type="hidden" data-document-status value="${esc(documentData.document_status || 'automatisch')}">${deleted ? '<p class="hint">Zum Bearbeiten das Dokument zuerst wiederherstellen.</p>' : '<button id="save-document-meta" class="primary">Änderungen speichern</button>'}</div>
+        <div class="details-technical"><h3>Technischer Bericht</h3><div id="technical-page-report">${technicalPageMarkup(pages[0] || {})}</div><h4>Verarbeitungslauf</h4><div class="stored-event-list">${history.length ? history.map(event => `<div><span>${esc(event.created_at)}</span><strong>${esc(event.message)}</strong>${event.payload?.model ? `<small>${esc(event.payload.model)}</small>` : ''}${event.payload?.reason ? `<small>${esc(event.payload.reason)}</small>` : ''}</div>`).join('') : '<p class="hint">Für diesen älteren Lauf ist kein Detailprotokoll gespeichert.</p>'}</div><div class="detail-actions">${deleted ? '<button id="detail-restore" class="primary">Wiederherstellen</button><button id="detail-purge" class="danger-text">Endgültig löschen</button>' : '<button id="detail-reprocess">Erneut verarbeiten</button><button id="detail-integrity">Original prüfen</button><button id="detail-finder">Im Finder</button><button id="detail-trash" class="danger-text">In Papierkorb</button>'}</div></div></div>
       </section>
     </div>`;
 
   let pageIndex = 0;
   let textView = 'diplomatic';
   let reviewOnly = false;
+  let cloudOnly = false;
+  let selectedVersionId = '';
   let imageView = 'original';
   let selectedLine = null;
 
@@ -981,23 +992,47 @@ async function showDocument(documentId) {
     context.fillRect(x1 * scaleX, y1 * scaleY, (x2 - x1) * scaleX, (y2 - y1) * scaleY);
     context.strokeRect(x1 * scaleX, y1 * scaleY, (x2 - x1) * scaleX, (y2 - y1) * scaleY);
     $('reader-line-text').value = line.text;
-    const readings = (line.readings || []).filter(reading => reading.text && reading.text !== line.text);
-    $('reader-alternatives').innerHTML = readings.length ? `<small>Andere Modell-Lesungen</small>${readings.map((reading, index) => `<button data-reader-alternative="${index}">${esc(reading.text)} <span>${esc(reading.model)} · ${Math.round(Number(reading.confidence || 0) * 100)} %</span></button>`).join('')}` : '';
+    const allReadings = (line.readings || []).filter(reading => reading.text);
+    const readings = allReadings.filter(reading => reading.text !== line.text);
+    const matchingCloud = allReadings.filter(reading => reading.kind === 'cloud' && reading.text === line.text);
+    $('reader-alternatives').innerHTML = readings.length || matchingCloud.length ? `<small>Gespeicherte Zweitlesungen – erst mit „Korrektur bestätigen“ wird eine davon zur Hauptlesung</small>${matchingCloud.map(reading => `<div class="cloud-agreement">✓ ${esc(cloudModelLabel(reading.model))} stimmt mit der lokalen Hauptlesung überein.</div>`).join('')}${readings.map((reading, index) => `<button data-reader-alternative="${index}" class="${reading.kind === 'cloud' ? 'cloud-alternative' : ''} ${(reading.quality_issues || []).length ? 'suspicious' : ''}">${esc(reading.text)} <span>${reading.kind === 'cloud' ? 'Cloud · ' : ''}${esc(cloudModelLabel(reading.model))} · ${Math.round(Number(reading.confidence || 0) * 100)} %${(reading.quality_issues || []).length ? ` · ⚠ ${esc(reading.quality_issues.join('; '))}` : ''}</span></button>`).join('')}` : '<div class="no-alternatives">Für diese Zeile ist keine weitere Modell-Lesung gespeichert.</div>';
     $('reader-alternatives').querySelectorAll('[data-reader-alternative]').forEach(button => button.onclick = event => { event.stopPropagation(); $('reader-line-text').value = readings[Number(button.dataset.readerAlternative)].text; });
     $('reader-editor').hidden = false;
     $('reader-lines').querySelectorAll('[data-line-id]').forEach(button => button.classList.toggle('selected', button.dataset.lineId === line.id));
     image.parentElement.scrollTo({ top: Math.max(0, y1 * scaleY - 80), behavior: 'smooth' });
   }
+  const cloudReadingsFor = line => (line.readings || []).filter(reading => reading.kind === 'cloud' && reading.text);
+  const selectedVersion = () => modelVersions.find(version => version.id === selectedVersionId) || null;
+  function versionNotice(version) {
+    if (!version) return '<div class="model-version-note"><strong>Hauptlesung</strong><span>Verwendet die aktuell ausgewählten beziehungsweise bestätigten Zeilen.</span></div>';
+    const coverage = `${version.covered_lines} von ${version.total_lines} Zeilen stammen aus ${esc(cloudModelLabel(version.model))}`;
+    const fallback = version.complete ? 'Vollständige gespeicherte Modellfassung.' : 'Reine Teilfassung; fehlende Zeilen werden nicht mit anderem Text aufgefüllt.';
+    const warning = (version.quality_notes || []).length ? ` · ⚠ ${esc(version.quality_notes.join('; '))}` : '';
+    return `<div class="model-version-note ${(version.quality_notes || []).length ? 'warning' : ''}"><strong>${esc(cloudModelLabel(version.model))}${version.complete ? '' : ' · Teilfassung'}</strong><span>${coverage}. ${fallback}${warning}</span></div>`;
+  }
+  function cloudComparisonMarkup(line) {
+    const readings = cloudReadingsFor(line);
+    return `<button class="cloud-comparison-card" data-line-id="${esc(line.id)}"><span class="cloud-comparison-head"><strong>Zeile ${Number(line.line_order || 0) + 1}</strong><em>${readings.length} Cloud-Lesung${readings.length === 1 ? '' : 'en'}</em></span><span class="comparison-reading local"><small>Lokale Hauptlesung · ${esc(line.model)}</small><span>${esc(line.text || '‹leer›')}</span></span>${readings.map(reading => `<span class="comparison-reading cloud ${(reading.quality_issues || []).length ? 'suspicious' : ''}"><small>Cloud-Zweitlesung · ${esc(cloudModelLabel(reading.model))}${(reading.quality_issues || []).length ? ' · ⚠ Format auffällig' : ''}</small><span>${esc(reading.text)}</span>${(reading.quality_issues || []).length ? `<em>${esc(reading.quality_issues.join('; '))}</em>` : ''}</span>`).join('')}<span class="comparison-help">Anklicken, um den Ausschnitt zu sehen und eine Lesung bewusst zu übernehmen.</span></button>`;
+  }
   function renderReaderPage() {
     const page = currentPage();
     if (!page) { $('reader-lines').innerHTML = '<div class="empty-state">Für dieses Dokument wurde kein Text erkannt.</div>'; return; }
     const pageData = pages.find(item => Number(item.page_index) === Number(page.page_index));
+    const version = selectedVersion();
+    const versionPage = version?.pages?.find(item => Number(item.page_index) === Number(page.page_index));
     $('reader-page-label').textContent = `Seite ${Number(page.page_index) + 1} von ${pages.length}`;
     $('reader-scan-image').src = `${pageData?.image_url || page.image_url}?view=${imageView}`;
-    const lines = reviewOnly ? page.lines.filter(line => line.review_status === 'unsicher') : page.lines;
-    $('reader-lines').innerHTML = textView === 'reading'
-      ? `<div class="readable-text">${esc(page.reading_text || 'Keine Lesefassung verfügbar.')}</div>`
-      : lines.map(line => `<button class="transcript-line ${line.review_status === 'unsicher' ? 'uncertain' : ''}" data-line-id="${esc(line.id)}"><span>${esc(line.text || '‹leer›')}</span><small>${Math.round(Number(line.confidence || 0) * 100)} % · ${esc(line.model)}</small></button>`).join('') || `<div class="empty-state compact">${reviewOnly ? 'Auf dieser Seite sind keine unsicheren Zeilen offen.' : 'Keine Zeilen erkannt.'}</div>`;
+    $('reader-version-control').hidden = cloudOnly || textView === 'diplomatic';
+    $('next-uncertain').hidden = cloudOnly || textView !== 'diplomatic';
+    const lines = cloudOnly ? page.lines.filter(line => cloudReadingsFor(line).length) : reviewOnly ? page.lines.filter(line => line.review_status === 'unsicher') : page.lines;
+    $('reader-lines').classList.toggle('cloud-comparison-list', cloudOnly);
+    $('reader-lines').innerHTML = cloudOnly
+      ? lines.map(cloudComparisonMarkup).join('') || '<div class="empty-state compact">Auf dieser Seite wurden keine Zeilen mit der Cloud gegengeprüft.</div>'
+      : textView === 'document'
+      ? `${versionNotice(version)}<div class="readable-document">${(version?.pages || transcript.pages).map((item, index) => `<section><small>Seite ${index + 1}</small><p>${esc(item.reading_text || 'Keine Lesefassung verfügbar.')}</p></section>`).join('')}</div>`
+      : textView === 'reading'
+      ? `${versionNotice(version)}<div class="readable-text">${esc(versionPage?.reading_text || page.reading_text || 'Keine Lesefassung verfügbar.')}</div>`
+      : lines.map(line => { const cloud = cloudReadingsFor(line); const suspicious = cloud.some(reading => (reading.quality_issues || []).length); return `<button class="transcript-line ${line.review_status === 'unsicher' ? 'uncertain' : ''} ${cloud.length ? 'cloud-reviewed' : ''}" data-line-id="${esc(line.id)}"><span>${esc(line.text || '‹leer›')}</span><small>${cloud.length ? `<em>${suspicious ? '⚠ ' : ''}Cloud · ${esc(cloudModelLabel(cloud[0].model))}</em>` : ''}${Math.round(Number(line.confidence || 0) * 100)} % · ${esc(line.model)}</small></button>`; }).join('') || `<div class="empty-state compact">${reviewOnly ? 'Auf dieser Seite sind keine unsicheren Zeilen offen.' : 'Keine Zeilen erkannt.'}</div>`;
     $('reader-lines').querySelectorAll('[data-line-id]').forEach(button => button.onclick = () => drawReaderLine(page.lines.find(line => line.id === button.dataset.lineId)));
     $('reader-editor').hidden = true;
     selectedLine = null;
@@ -1022,12 +1057,14 @@ async function showDocument(documentId) {
   renderReaderPage();
   $('document-detail').querySelectorAll('[data-reader-page]').forEach(button => button.onclick = () => { pageIndex = Number(button.dataset.readerPage); renderReaderPage(); });
   $('document-detail').querySelectorAll('[data-text-view]').forEach(button => button.onclick = () => { textView = button.dataset.textView; $('document-detail').querySelectorAll('[data-text-view]').forEach(item => item.classList.toggle('active', item === button)); renderReaderPage(); });
+  $('reader-version').onchange = () => { selectedVersionId = $('reader-version').value; renderReaderPage(); };
   $('document-detail').querySelectorAll('[data-image-view]').forEach(button => button.onclick = () => { imageView = button.dataset.imageView; $('document-detail').querySelectorAll('[data-image-view]').forEach(item => item.classList.toggle('active', item === button)); renderReaderPage(); });
   $('document-detail').querySelectorAll('[data-reader-tab]').forEach(button => button.onclick = () => {
     $('document-detail').querySelectorAll('[data-reader-tab]').forEach(item => item.classList.toggle('active', item === button));
     if (button.dataset.readerTab === 'details') { $('reader-reading').classList.remove('active'); $('reader-details').classList.add('active'); return; }
-    $('reader-details').classList.remove('active'); $('reader-reading').classList.add('active'); reviewOnly = button.dataset.readerTab === 'review'; textView = 'diplomatic'; renderReaderPage();
+    $('reader-details').classList.remove('active'); $('reader-reading').classList.add('active'); reviewOnly = button.dataset.readerTab === 'review'; cloudOnly = button.dataset.readerTab === 'cloud'; textView = 'diplomatic'; renderReaderPage();
   });
+  $('document-detail').querySelector('[data-open-cloud-comparison]')?.addEventListener('click', () => $('document-detail').querySelector('[data-reader-tab="cloud"]')?.click());
   $('next-uncertain').onclick = () => {
     const uncertain = transcript.pages.flatMap(page => page.lines.map(line => ({ page: page.page_index, line })).filter(item => item.line.review_status === 'unsicher'));
     if (!uncertain.length) return notify('Keine unsicheren Stellen mehr offen.');
@@ -1044,13 +1081,44 @@ async function showDocument(documentId) {
   };
   $('reader-cancel-line').onclick = () => { $('reader-editor').hidden = true; selectedLine = null; };
   $('reader-back').onclick = () => { document.querySelector('.archive-workspace')?.classList.remove('reader-open'); $('document-detail').hidden = true; $('viewer-empty').hidden = false; state.selectedDocumentId = null; };
-  $('reader-export').onclick = () => exportDocument(documentId, $('reader-export'));
+  const returnToLibrary = async message => {
+    document.querySelector('.archive-workspace')?.classList.remove('reader-open');
+    $('document-detail').hidden = true; $('viewer-empty').hidden = false; state.selectedDocumentId = null;
+    state.archiveFilter = 'all';
+    document.querySelectorAll('#archive-navigation button,.collection-list button').forEach(item => item.classList.remove('active'));
+    document.querySelector('#archive-navigation [data-filter="all"]')?.classList.add('active');
+    await loadDocuments();
+    notify(message);
+  };
+  const trashCurrentDocument = async () => {
+    if (!await askConfirmation('Dokument in den Papierkorb?', 'Das Dokument verschwindet aus der Bibliothek. Verwaltete Originale bleiben erhalten, bis du es im Papierkorb endgültig löschst.')) return;
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+    if (!response.ok) return notify(await responseError(response, 'Dokument konnte nicht in den Papierkorb verschoben werden.'), true);
+    await returnToLibrary('Dokument wurde in den Papierkorb verschoben.');
+  };
+  const restoreCurrentDocument = async () => {
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/restore`, { method: 'POST' });
+    if (!response.ok) return notify(await responseError(response, 'Dokument konnte nicht wiederhergestellt werden.'), true);
+    await returnToLibrary('Dokument wurde wiederhergestellt.');
+  };
+  const purgeCurrentDocument = async () => {
+    if (!await askConfirmation('Dokument endgültig löschen?', 'Verwaltete Originale, Transkriptionen, Suchindex und Exporte werden unwiderruflich entfernt.')) return;
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/permanent`, { method: 'DELETE' });
+    if (!response.ok) return notify(await responseError(response, 'Dokument konnte nicht endgültig gelöscht werden.'), true);
+    await returnToLibrary('Dokument und verwaltete Dateien wurden endgültig gelöscht.');
+  };
+  if ($('reader-export')) $('reader-export').onclick = () => exportDocument(documentId, $('reader-export'));
+  if ($('reader-trash')) $('reader-trash').onclick = trashCurrentDocument;
+  if ($('reader-restore')) $('reader-restore').onclick = restoreCurrentDocument;
+  if ($('reader-purge')) $('reader-purge').onclick = purgeCurrentDocument;
   if ($('reader-file-document')) $('reader-file-document').onclick = () => { $('document-detail').querySelector('[data-reader-tab="details"]').click(); setTimeout(() => $('document-detail').querySelector('.collection-tree-checks input')?.focus(), 30); };
-  $('save-document-meta').onclick = () => saveDocumentMetadata(documentId, documentData.document_status || 'automatisch');
-  $('detail-reprocess').onclick = async () => { const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/reprocess`, { method: 'POST' }); if (!response.ok) return notify(await responseError(response, 'Neuverarbeitung konnte nicht gestartet werden.'), true); const job = await response.json(); state.job = job.id; state.completedJob = null; openTab('read'); watchJob(job.id); };
-  $('detail-integrity').onclick = () => verifyLibrary($('detail-integrity'));
-  $('detail-finder').onclick = async () => { const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/reveal`, { method: 'POST' }); if (!response.ok) notify(await responseError(response, 'Original konnte nicht angezeigt werden.'), true); };
-  $('detail-trash').onclick = async () => { if (!await askConfirmation('Dokument in den Papierkorb?', 'Die verwalteten Originale bleiben bis zum endgültigen Löschen erhalten.')) return; const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' }); if (response.ok) { document.querySelector('.archive-workspace')?.classList.remove('reader-open'); await loadDocuments(); } };
+  if ($('save-document-meta')) $('save-document-meta').onclick = () => saveDocumentMetadata(documentId, documentData.document_status || 'automatisch');
+  if ($('detail-reprocess')) $('detail-reprocess').onclick = async () => { const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/reprocess`, { method: 'POST' }); if (!response.ok) return notify(await responseError(response, 'Neuverarbeitung konnte nicht gestartet werden.'), true); const job = await response.json(); state.job = job.id; state.completedJob = null; openTab('read'); watchJob(job.id); };
+  if ($('detail-integrity')) $('detail-integrity').onclick = () => verifyLibrary($('detail-integrity'));
+  if ($('detail-finder')) $('detail-finder').onclick = async () => { const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/reveal`, { method: 'POST' }); if (!response.ok) notify(await responseError(response, 'Original konnte nicht angezeigt werden.'), true); };
+  if ($('detail-trash')) $('detail-trash').onclick = trashCurrentDocument;
+  if ($('detail-restore')) $('detail-restore').onclick = restoreCurrentDocument;
+  if ($('detail-purge')) $('detail-purge').onclick = purgeCurrentDocument;
 }
 
 function metric(value) { return value == null ? '–' : `${Math.round(Number(value) * 100)} %`; }

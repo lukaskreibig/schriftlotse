@@ -9,7 +9,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from schriftlotse.cloud import OpenRouterReviewer
+from schriftlotse.cloud import (
+    OpenRouterReviewer,
+    cloud_line_crop_bounds,
+    resolve_cloud_profile,
+)
 from schriftlotse.config import AppPaths, Settings
 from schriftlotse.database import Database
 from schriftlotse.domain import (
@@ -17,7 +21,6 @@ from schriftlotse.domain import (
     DocumentRequest,
     DocumentResult,
     JobStatus,
-    LayoutClass,
     PageResult,
     Reading,
     ReadingKind,
@@ -470,10 +473,24 @@ class ProcessingPipeline:
                                 line.baseline = [(x1, y2 - 2), (x2, y2 - 2)]
                             del old_id
                         if cloud_reviewer is not None and candidate.lines:
-                            cloud_profile = (
-                                "fast"
-                                if page_profile.layout in {LayoutClass.FORM, LayoutClass.TABLE}
-                                else request.cloud_model_profile
+                            cloud_profile = resolve_cloud_profile(
+                                request.cloud_model_profile,
+                                page_profile.layout.value,
+                            )
+                            cloud_option = cloud_reviewer.option(cloud_profile)
+                            selection_reason = (
+                                f"Automatisch wegen Layout {page_profile.layout.value} gewählt"
+                                if request.cloud_model_profile == "auto"
+                                else "Vom Benutzer ausdrücklich gewählt"
+                            )
+                            self._live(
+                                stage="cloud",
+                                document_title=document.title,
+                                page_number=page_index + 1,
+                                model=cloud_option.model,
+                                reason=selection_reason,
+                                requested_profile=request.cloud_model_profile,
+                                selected_profile=cloud_profile,
                             )
                             if progress:
                                 progress(
@@ -627,18 +644,12 @@ class ProcessingPipeline:
         for line in uncertain:
             if reviewer.spent_usd >= reviewer.budget_usd:
                 return "Cloud-Kostenlimit erreicht; weitere Stellen bleiben lokal"
-            x1, y1, x2, y2 = line.bbox
-            padding = max(12, round((y2 - y1) * 0.45))
             crop = image.crop(
-                (
-                    max(0, x1 - padding),
-                    max(0, y1 - padding),
-                    min(image.width, x2 + padding),
-                    min(image.height, y2 + padding),
-                )
+                cloud_line_crop_bounds(line.bbox, image.width, image.height)
             )
             started = time.monotonic()
             option = reviewer.option(profile)
+            spent_before = reviewer.spent_usd
             try:
                 review = reviewer.review(
                     crop,
@@ -651,10 +662,10 @@ class ProcessingPipeline:
             except Exception as error:
                 self.database.record_cloud_usage(
                     job_id=job_id,
-                    line_id=None,
+                    line_id=line.id,
                     model=option.model,
                     profile=profile,
-                    cost_usd=reviewer.spent_usd,
+                    cost_usd=max(0.0, reviewer.spent_usd - spent_before),
                     duration_seconds=time.monotonic() - started,
                     status="fehlgeschlagen",
                     message=str(error),
@@ -671,12 +682,19 @@ class ProcessingPipeline:
             )
             self.database.record_cloud_usage(
                 job_id=job_id,
-                line_id=None,
+                line_id=line.id,
                 model=review.model,
                 profile=profile,
                 cost_usd=review.cost,
                 duration_seconds=time.monotonic() - started,
                 status="erfolgreich",
+            )
+            self._live(
+                stage="cloud",
+                model=review.model,
+                line_id=line.id,
+                reason="Cloud-Zweitlesung gespeichert; lokale Hauptlesung bleibt unverändert",
+                cost_usd=review.cost,
             )
         return None
 

@@ -73,8 +73,10 @@ uv run schriftlotse gui
 - **Archiv & Suche:** Alle Dokumente sind auch ohne Suchbegriff sichtbar. Eingang, eigene
   verschachtelte Sammlungen, Archiv/Bestand/Signatur und verknüpfte Quellordner bilden den
   dauerhaften Arbeitsbereich. Ein Dokument öffnet als synchroner Scan-/Text-Arbeitsplatz mit
-  vollständiger Transkription, konservativer Lesefassung und technischer Laufhistorie. Eine Suche
-  öffnet direkt die richtige logische Seite und Zeile.
+  vollständiger Transkription, konservativer Lesefassung und technischer Laufhistorie. Über die
+  Fassungswahl lassen sich Hauptlesung und alle gespeicherten Modell-Teilfassungen samt
+  Abdeckungsgrad durchschalten; fehlende Modellzeilen werden nicht verschleiert aufgefüllt.
+  Eine Suche öffnet direkt die richtige logische Seite und Zeile.
   Unsichere Stellen lassen sich priorisiert abarbeiten; Exporte werden jederzeit aus der
   Datenbank neu erzeugt.
 - **Modelle:** lokale Gewichte und Installationsstatus verwalten.
@@ -96,7 +98,10 @@ weiterhin die zuverlässigste Modellsteuerung.
   Goldstandard geprüften Spezialisten; CHURRO bleibt Ganzseiten-Zweitleser und Fallback.
 - **Beste Qualität:** dieselbe lokale Pipeline; anschließend werden höchstens vier besonders
   unsichere Zeilen je Seite bis zum bestätigten Auftragsbudget per Cloud gegengelesen. Die
-  Cloud-Fassung bleibt eine eigene, unbestätigte Lesung.
+  Cloud-Fassung bleibt eine eigene, unbestätigte Lesung. Eine ausdrücklich gewählte Modelloption
+  wird respektiert; nur **Automatisch** darf bei Formularen/Tabellen Gemini und sonst Sonnet
+  wählen. Modell-Erklärungen, überlange Antworten und hineingeratene Nachbarzeilen werden vom
+  Einzelzeilen-Format-Gate verworfen und im technischen Lauf protokolliert.
 
 TrOCR nutzt auf dem M3 das MPS-Backend. Kraken/UB und Party laufen auf macOS über den stabilen
 CPU-Pfad. CHURRO nutzt MLX/Metal und erhält gezielt die beleuchtungsnormalisierte Seite. Seine
@@ -141,6 +146,8 @@ verschachtelten Sammlungen. Der Ordner bleibt als manuell abgleichbare Quelle ve
 Hintergrundüberwachung: Erst eine bestätigte Auswahl startet neue OCR. Verschobene identische
 Dateien werden ohne neue Erkennung umgeordnet, fehlende Quellen löschen niemals die verwaltete
 Kopie. Direkte Einzelimporte ohne Sammlung bleiben im **Eingang**, bis sie abgelegt werden.
+Dokumente lassen sich im Kopf des Lesers in den **Papierkorb** verschieben. Dort stehen
+**Wiederherstellen** und das davon klar getrennte **Endgültig löschen** zur Verfügung.
 
 Die native macOS-App übergibt ausgewählte Pfade direkt und bewahrt dadurch den echten
 Dateinamen. Temporäre Namen wie `tempImage…` werden zusätzlich erkannt und müssen vor dem Start

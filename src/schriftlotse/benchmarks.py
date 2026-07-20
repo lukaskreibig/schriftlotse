@@ -406,7 +406,13 @@ def run_cloud_manifest(manifest: Path, budget_usd: float = 2.0) -> dict[str, obj
             option = CLOUD_MODEL_OPTIONS[profile]
             try:
                 review = reviewer.review(
-                    image, image, "", item.get("year"), ScriptHint.AUTO, profile=profile
+                    image,
+                    image,
+                    "",
+                    item.get("year"),
+                    ScriptHint.AUTO,
+                    profile=profile,
+                    single_line=False,
                 )
                 metrics = text_metrics([(item["reference"], review.text)], normalize=True)
                 results.append(

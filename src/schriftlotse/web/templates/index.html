@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>SchriftLotse</title>
-  <link rel="stylesheet" href="/static/style.css?v=archive-2">
+  <link rel="stylesheet" href="/static/style.css?v=archive-3">
 </head>
 <body>
   <header class="app-header">
@@ -197,6 +197,6 @@
   <dialog id="migration-dialog" class="import-dialog"><form method="dialog"><div class="panel-title"><div><p class="eyebrow">Sichere Bibliothek</p><h3>Vorhandene Dokumente übernehmen</h3></div><span id="migration-size"></span></div><p class="hint">Originale werden kopiert und per SHA-256 geprüft. Bestehende Quelldateien werden nicht verändert oder gelöscht.</p><div id="migration-list" class="migration-list"></div><div class="button-row"><button value="cancel">Später</button><button id="run-migration" value="confirm" class="primary">Auswahl übernehmen</button></div></form></dialog>
   <dialog id="collection-dialog"><form method="dialog"><h3 id="collection-dialog-title">Neue Sammlung</h3><label>Name<input id="collection-name" maxlength="120" autocomplete="off"></label><label>Unterhalb von<select id="collection-parent"><option value="">Bibliothek (oberste Ebene)</option></select></label><label>Beschreibung <small>optional</small><textarea id="collection-description" rows="3"></textarea></label><div class="button-row"><button id="delete-collection" type="button" class="danger-text" hidden>Sammlung löschen</button><span class="dialog-spacer"></span><button value="cancel">Abbrechen</button><button id="save-collection" value="confirm" class="primary">Anlegen</button></div></form></dialog>
   <dialog id="source-sync-dialog" class="import-dialog"><form method="dialog"><div class="panel-title"><div><p class="eyebrow">Manueller Abgleich</p><h3 id="source-sync-title">Ordneränderungen prüfen</h3></div><span id="source-sync-count"></span></div><div id="source-sync-content" class="migration-list"></div><div class="button-row"><button value="cancel">Schließen</button><button id="prepare-source-sync" value="confirm" class="primary">Auswahl zum Entziffern übernehmen</button></div></form></dialog>
-  <script src="/static/app.js?v=archive-2"></script>
+  <script src="/static/app.js?v=archive-3"></script>
 </body>
 </html>

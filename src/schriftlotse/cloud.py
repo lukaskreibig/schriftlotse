@@ -35,6 +35,16 @@ class CloudModelOption:
 # reproducible.  No vendor has a public benchmark for this exact Kurrent corpus;
 # the labels therefore describe the intended operating point, not a guarantee.
 CLOUD_MODEL_OPTIONS: dict[str, CloudModelOption] = {
+    "auto": CloudModelOption(
+        key="auto",
+        model="layoutabhängige Auswahl",
+        label="Automatisch · nach Dokumenttyp",
+        description=(
+            "Wählt Gemini für erkannte Formulare/Tabellen und Sonnet für schwierige Textzeilen."
+        ),
+        price_hint="Kosten richten sich nach dem ausgewählten Modell",
+        best_for="Unbekannte oder gemischte Dokumenttypen",
+    ),
     "fast": CloudModelOption(
         key="fast",
         model="google/gemini-3.5-flash",
@@ -75,6 +85,13 @@ CLOUD_MODEL_OPTIONS: dict[str, CloudModelOption] = {
 }
 
 
+def resolve_cloud_profile(profile: str, layout: str | None = None) -> str:
+    """Resolve only the explicit automatic option; named models are never overridden."""
+    if profile != "auto":
+        return profile
+    return "fast" if layout in {"formular", "tabelle"} else "quality"
+
+
 def cloud_model_status() -> list[dict[str, Any]]:
     return [asdict(option) for option in CLOUD_MODEL_OPTIONS.values()]
 
@@ -86,6 +103,51 @@ class CloudReview:
     model: str
     cost: float
     notes: str = ""
+
+
+def cloud_transcription_issues(
+    text: str,
+    local_text: str,
+    *,
+    single_line: bool = True,
+) -> list[str]:
+    """Return transparent format warnings without attempting to rewrite model output."""
+    issues: list[str] = []
+    reasoning = re.compile(
+        r"(?:^|\n)\s*(?:wait[,.:]|let(?:'s| us)\b|i (?:see|think|need|will)\b|"
+        r"the (?:image|text|line)\b|analysis\s*:|überlegung\s*:)",
+        re.IGNORECASE,
+    )
+    if reasoning.search(text):
+        issues.append("enthält wahrscheinlich Modell-Erklärung statt nur Abschrift")
+    nonempty_lines = [line for line in text.splitlines() if line.strip()]
+    if single_line and len(nonempty_lines) > 1:
+        issues.append("enthält mehrere Zeilen für einen Einzelzeilen-Ausschnitt")
+    plausible_limit = max(
+        240 if single_line else 2_000,
+        len(local_text) * (4 if single_line else 8),
+    )
+    if len(text) > plausible_limit:
+        issues.append("ist für den geprüften Ausschnitt unplausibel lang")
+    return issues
+
+
+def cloud_line_crop_bounds(
+    bbox: tuple[int, int, int, int] | list[int],
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    """Keep ascenders/descenders while excluding neighbouring text lines."""
+    x1, y1, x2, y2 = (int(value) for value in bbox)
+    line_height = max(1, y2 - y1)
+    horizontal = max(10, round(line_height * 0.4))
+    vertical = max(4, round(line_height * 0.18))
+    return (
+        max(0, x1 - horizontal),
+        max(0, y1 - vertical),
+        min(width, x2 + horizontal),
+        min(height, y2 + vertical),
+    )
 
 
 class OpenRouterReviewer:
@@ -152,7 +214,12 @@ class OpenRouterReviewer:
         return f"data:image/jpeg;base64,{encoded}"
 
     @staticmethod
-    def _clean_transcription(content: str, local_text: str) -> str:
+    def _clean_transcription(
+        content: str,
+        local_text: str,
+        *,
+        single_line: bool = True,
+    ) -> str:
         text = content.strip()
         text = re.sub(r"<analysis>.*?</analysis>", "", text, flags=re.DOTALL | re.IGNORECASE)
         text = text.strip()
@@ -166,9 +233,9 @@ class OpenRouterReviewer:
         ).strip()
         if re.match(r"^(?:I cannot|I can't|Es tut mir leid|Ich kann)", text, re.IGNORECASE):
             raise RuntimeError("Das Cloud-Modell hat die Transkription abgelehnt")
-        plausible_limit = max(2_000, len(local_text) * 8)
-        if len(text) > plausible_limit:
-            raise RuntimeError("Cloud-Ausgabe ist für den Ausschnitt unplausibel lang")
+        issues = cloud_transcription_issues(text, local_text, single_line=single_line)
+        if issues:
+            raise RuntimeError(f"Cloud-Ausgabe verworfen: {'; '.join(issues)}")
         return text
 
     def review(
@@ -180,6 +247,7 @@ class OpenRouterReviewer:
         script_hint: ScriptHint,
         model: str | None = None,
         profile: str = "quality",
+        single_line: bool = True,
     ) -> CloudReview:
         del optimized  # Kept in the API for callers; one image avoids model confusion.
         if not self.api_key:
@@ -196,7 +264,13 @@ class OpenRouterReviewer:
             "Zeichenabschrift: Korrigiere niemals Grammatik, Flexion, Bindestriche, Abkürzungen "
             "oder vermeintliche Schreibfehler. Schreibe nur Zeichen, die im Bild stehen. "
             "Erfinde oder ergänze nichts. "
-            "Unleserliches: ⟦unleserlich⟧; unsichere Lesung: ⟦Lesung?⟧. "
+            + (
+                "Der Ausschnitt dient der Prüfung genau einer Zielzeile. Gib genau eine "
+                "Textzeile zurück und ignoriere angeschnittene Nachbarzeilen. "
+                if single_line
+                else "Transkribiere den gesamten sichtbaren Ausschnitt in seiner Zeilenfolge. "
+            )
+            + "Unleserliches: ⟦unleserlich⟧; unsichere Lesung: ⟦Lesung?⟧. "
             f"Kontextjahr: {year or 'unbekannt'}; Schriftangabe: {script_hint.value}. "
             f"Eine lokale, unbestätigte Vorlesung lautet: {local_text or 'keine'}. "
             "Nutze sie nur als Hinweis und korrigiere sie anhand des Bildes."
@@ -212,7 +286,7 @@ class OpenRouterReviewer:
                     ],
                 }
             ],
-            "max_tokens": 1200,
+            "max_tokens": 300 if single_line else 1200,
             "provider": {
                 "zdr": option.zdr,
                 "data_collection": "deny",
@@ -242,7 +316,11 @@ class OpenRouterReviewer:
             content = "".join(
                 str(item.get("text", "")) for item in content if isinstance(item, dict)
             )
-        text = self._clean_transcription(str(content), local_text)
+        text = self._clean_transcription(
+            str(content),
+            local_text,
+            single_line=single_line,
+        )
         notes = ""
         confidence = 0.5
         # Backwards-compatible parsing for providers that still return a JSON

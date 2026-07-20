@@ -280,15 +280,20 @@ pre { max-height: 220px; overflow: auto; white-space: pre-wrap; color: #52676b; 
 .reader-title small,.reader-title strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reader-title small { color: var(--muted); font-size: 9px; }
 .reader-title strong { color: var(--ink); font-size: 15px; }
+.reader-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.reader-toolbar-actions button { padding: 6px 8px; font-size: 9px; white-space: nowrap; }
 .reader-status { border-radius: 99px; background: #edf5ef; color: #39744e; padding: 4px 8px; font-size: 9px; font-weight: 750; white-space: nowrap; }
 .reader-status.needs-review { background: #fff3d9; color: #8a611b; }
 .reader-notice { flex: 0 0 auto; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid #c7ddd8; background: #eff8f5; padding: 6px 13px; color: #3d6266; font-size: 10px; }
 .reader-notice.warning { border-color: #e5cd96; background: #fff8e8; color: #765c2c; }
+.reader-notice.cloud { border-color: #b8d2db; background: #eef7fa; color: #285d6c; }
+.reader-notice.deleted { border-color: #e0b1ac; background: #fff1ef; color: #7d342e; }
 .reader-notice span { flex: 1; }
 .reader-notice button { padding: 4px 7px; font-size: 9px; }
 .reader-tabs { flex: 0 0 auto; display: flex; gap: 3px; padding: 6px 12px 0; border-bottom: 1px solid var(--line); }
 .reader-tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 7px 11px; color: var(--muted); font-size: 10px; transform: none; }
 .reader-tabs button.active { border-bottom-color: var(--gold); color: var(--ink); }
+.reader-tabs button b { min-width: 15px; display: inline-block; margin-left: 3px; border-radius: 99px; background: #dcebea; padding: 1px 4px; font-size: 7px; }
 .reader-panel { display: none; flex: 1 1 auto; min-height: 0; }
 .reader-panel.active { display: grid; }
 #reader-reading { grid-template-columns: 62px minmax(330px,1.08fr) minmax(340px,.92fr); }
@@ -300,6 +305,8 @@ pre { max-height: 220px; overflow: auto; white-space: pre-wrap; color: #52676b; 
 .reader-scan,.reader-text { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .reader-scan { border-right: 1px solid var(--line); background: #dfddd6; }
 .reader-scan-toolbar,.reader-text-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 7px; min-height: 38px; padding: 6px 9px; border-bottom: 1px solid var(--line); background: #f8f7f3; color: var(--muted); font-size: 9px; }
+.reader-text-toolbar { flex-wrap: wrap; }
+.reader-view-controls { display: flex; gap: 3px; }
 .reader-scan-toolbar button,.reader-text-toolbar button { padding: 4px 7px; border-radius: 6px; font-size: 8px; transform: none; }
 .reader-scan-toolbar button.active,.reader-text-toolbar button.active { border-color: #759397; background: #edf3f2; color: var(--ink); }
 .reader-scan-canvas { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; }
@@ -308,9 +315,19 @@ pre { max-height: 220px; overflow: auto; white-space: pre-wrap; color: #52676b; 
 .reader-lines { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px; }
 .transcript-line { width: 100%; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; margin-bottom: 4px; border: 1px solid transparent; border-radius: 7px; background: transparent; padding: 6px 8px; color: #30464b; font: 12px/1.45 Georgia,serif; text-align: left; transform: none; }
 .transcript-line small { align-self: center; color: var(--muted); font: 7px/1.2 ui-sans-serif,-apple-system,sans-serif; white-space: nowrap; }
+.transcript-line small em { display: block; margin-bottom: 2px; border-radius: 99px; background: #dff0f5; color: #276477; padding: 2px 5px; font-style: normal; font-weight: 750; }
 .transcript-line:hover,.transcript-line.selected { border-color: #a7bbb8; background: #f2f6f5; }
 .transcript-line.uncertain { border-left: 3px solid var(--gold); background: #fffaf0; }
 .readable-text { color: #2d4449; font: 14px/1.75 Georgia,serif; white-space: pre-wrap; }
+.reader-version-control { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 8px; }
+.reader-version-control select { width: min(190px, 17vw); padding: 4px 20px 4px 6px; border-radius: 6px; font-size: 8px; }
+.model-version-note { margin-bottom: 8px; border: 1px solid #c9dcda; border-radius: 8px; background: #f2f8f7; padding: 7px 9px; font: 9px/1.4 ui-sans-serif,-apple-system,sans-serif; }
+.model-version-note strong,.model-version-note span { display: block; }
+.model-version-note span { color: var(--muted); }
+.model-version-note.warning { border-color: #e2bd72; background: #fff8e8; }
+.readable-document section { margin-bottom: 13px; border-bottom: 1px solid #e7e3da; padding-bottom: 11px; }
+.readable-document section > small { display: block; margin-bottom: 4px; color: var(--gold); font: 750 8px/1.2 ui-sans-serif,-apple-system,sans-serif; text-transform: uppercase; }
+.readable-document p { margin: 0; color: #2d4449; font: 13px/1.7 Georgia,serif; white-space: pre-wrap; }
 .reader-editor { flex: 0 0 auto; border-top: 1px solid var(--line); background: #faf9f5; padding: 8px 10px; }
 .reader-editor textarea { margin-top: 3px; padding: 7px; font: 12px/1.4 Georgia,serif; resize: none; }
 .reader-editor .button-row { margin-top: 5px; }
@@ -318,6 +335,21 @@ pre { max-height: 220px; overflow: auto; white-space: pre-wrap; color: #52676b; 
 .reader-alternatives > small { width: 100%; color: var(--muted); font-size: 8px; font-weight: 700; }
 .reader-alternatives button { max-width: 100%; overflow: hidden; padding: 4px 6px; background: #fff; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; transform: none; }
 .reader-alternatives button span { color: var(--muted); }
+.reader-alternatives button.suspicious { border-color: #d49c37; background: #fff8e8; }
+.reader-alternatives .cloud-alternative { border-color: #9fc8d3; background: #f0f8fa; }
+.cloud-agreement,.no-alternatives { width: 100%; border-radius: 6px; background: #edf6ef; color: #356b46; padding: 5px 7px; font-size: 8px; }
+.no-alternatives { background: transparent; color: var(--muted); padding-left: 0; }
+.cloud-comparison-list { display: grid; align-content: start; gap: 7px; }
+.cloud-comparison-card { width: 100%; display: grid; gap: 6px; border-color: #b7cdd2; background: #fbfefd; padding: 9px; text-align: left; transform: none; }
+.cloud-comparison-head { display: flex; justify-content: space-between; align-items: center; color: var(--ink); font-size: 9px; }
+.cloud-comparison-head em { border-radius: 99px; background: #dff0f5; color: #276477; padding: 2px 6px; font-style: normal; }
+.comparison-reading { display: block; border-left: 3px solid #93aaa7; background: #f4f6f5; padding: 6px 8px; color: #31484d; font: 11px/1.4 Georgia,serif; }
+.comparison-reading.cloud { border-color: #4a9ab0; background: #eff8fa; }
+.comparison-reading.suspicious { border-color: #c58b2b; background: #fff8e8; }
+.comparison-reading small,.comparison-reading > span,.comparison-reading em { display: block; }
+.comparison-reading small { display: block; margin-bottom: 2px; color: var(--muted); font: 7px/1.3 ui-sans-serif,-apple-system,sans-serif; }
+.comparison-reading em { margin-top: 3px; color: #8a611b; font-size: 7px; font-style: normal; }
+.comparison-help { color: var(--muted); font-size: 8px; }
 #reader-details { overflow: auto; padding: 14px; }
 .reader-details-grid { display: grid; grid-template-columns: minmax(380px,.9fr) minmax(420px,1.1fr); gap: 18px; align-items: start; }
 .reader-details-grid h3 { margin: 0 0 8px; }
@@ -546,7 +578,7 @@ dialog .button-row { justify-content: flex-end; }
   #settings .settings-workspace { flex: 1 1 auto; min-height: 0; }
   #settings .settings-workspace, #settings .system-status { overflow: hidden; }
   #settings .card { height: 100%; min-height: 0; overflow: hidden; padding: 13px; }
-  #settings .cloud-catalog { max-height: none; overflow: visible; }
+  #settings .cloud-catalog { max-height: 152px; overflow-y: auto; }
   #settings .cloud-model-card { padding: 2px 8px; }
   #settings .cloud-model-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #settings #key-status { margin: 5px 0 0; }

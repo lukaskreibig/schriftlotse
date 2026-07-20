@@ -86,7 +86,7 @@ def test_complete_desktop_workflow_and_compact_layout(ui_server) -> None:
         page.get_by_role("button", name="Einstellungen").click()
         page.locator("#openrouter-key").fill("sk-or-v1-test-pasteable")
         assert page.locator("#openrouter-key").input_value() == "sk-or-v1-test-pasteable"
-        assert page.locator("#setting-cloud-model option").count() == 4
+        assert page.locator("#setting-cloud-model option").count() == 5
         assert page.evaluate("document.documentElement.scrollHeight <= window.innerHeight")
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         browser.close()
@@ -104,7 +104,7 @@ def test_primary_read_controls_stay_inside_native_viewport(ui_server, width, hei
             assert box is not None
             assert box["x"] >= 0 and box["y"] >= 0
             assert box["x"] + box["width"] <= width + 1
-            assert box["y"] + box["height"] <= height + 1
+            assert box["y"] + box["height"] <= height + 1, selector
         page.locator('input[value="beste_qualitaet"]').check()
         assert page.locator("#start").is_visible()
         assert page.locator("#start").evaluate(
@@ -119,7 +119,7 @@ def test_primary_read_controls_stay_inside_native_viewport(ui_server, width, hei
             assert box is not None
             assert box["x"] >= 0 and box["y"] >= 0
             assert box["x"] + box["width"] <= width + 1
-            assert box["y"] + box["height"] <= height + 1
+            assert box["y"] + box["height"] <= height + 1, selector
         browser.close()
 
 
@@ -262,6 +262,7 @@ def test_document_reader_shows_scan_transcript_and_readable_version(ui_server) -
                 "lines": [
                     {
                         "id": "line-1",
+                        "line_order": 0,
                         "text": "Lieber Hermann, ich schreibe dir heute.",
                         "bbox": [20, 30, 280, 55],
                         "polygon": [],
@@ -270,6 +271,48 @@ def test_document_reader_shows_scan_transcript_and_readable_version(ui_server) -
                         "variant": "normalisiert",
                         "review_status": "unsicher",
                         "manually_corrected": False,
+                        "readings": [
+                            {
+                                "id": "line-1:cloud:1",
+                                "kind": "cloud",
+                                "text": "Lieber Hermann, ich schreibe Dir heute.",
+                                "model": "anthropic/claude-sonnet-5",
+                                "confidence": 0.74,
+                                "quality_issues": [],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "cloud_summary": {
+            "reading_count": 1,
+            "line_count": 1,
+            "models": [
+                {
+                    "model": "anthropic/claude-sonnet-5",
+                    "reading_count": 1,
+                    "line_count": 1,
+                }
+            ],
+            "requests": 1,
+            "cost_usd": 0.0123,
+        },
+        "model_versions": [
+            {
+                "id": "anthropic/claude-sonnet-5",
+                "model": "anthropic/claude-sonnet-5",
+                "covered_lines": 1,
+                "total_lines": 1,
+                "changed_lines": 1,
+                "quality_issue_lines": 0,
+                "complete": True,
+                "pages": [
+                    {
+                        "page_index": 0,
+                        "reading_text": "Lieber Hermann, ich schreibe Dir heute.",
+                        "covered_lines": 1,
+                        "total_lines": 1,
                     }
                 ],
             }
@@ -324,11 +367,124 @@ def test_document_reader_shows_scan_transcript_and_readable_version(ui_server) -
 
         assert page.locator(".transcript-line").count() == 1
         assert page.locator(".document-reader").bounding_box()["y"] < 180
+        assert page.get_by_role("button", name="In Papierkorb").is_visible()
+        assert "1 von 1 Zeilen" in page.locator(".reader-notice.cloud").inner_text()
         page.locator(".transcript-line").click()
         assert page.locator("#reader-editor").is_visible()
+        assert "Claude Sonnet" in page.locator("#reader-alternatives").inner_text()
+        page.get_by_role("button", name="Cloud-Vergleich 1").click()
+        assert "Lokale Hauptlesung" in page.locator(".cloud-comparison-card").inner_text()
+        assert "Cloud-Zweitlesung" in page.locator(".cloud-comparison-card").inner_text()
+        page.get_by_role("button", name="Lesen").click()
         page.get_by_role("button", name="Lesefassung").click()
         assert "Lieber Hermann" in page.locator(".readable-text").inner_text()
+        page.locator("#reader-version").select_option("anthropic/claude-sonnet-5")
+        assert "schreibe Dir" in page.locator(".readable-text").inner_text()
+        page.get_by_role("button", name="Gesamtdokument").click()
+        assert "schreibe Dir" in page.locator(".readable-document").inner_text()
         assert page.evaluate("document.documentElement.scrollHeight <= window.innerHeight")
+        browser.close()
+
+
+def test_trash_reader_offers_restore_and_permanent_delete(ui_server) -> None:
+    url, root = ui_server
+    image = root / "deleted-reader.png"
+    Image.new("RGB", (160, 120), "white").save(image)
+    document = {
+        "id": "deleted-document",
+        "job_id": None,
+        "title": "Gelöschte Urkunde",
+        "year": 1901,
+        "document_status": "automatisch",
+        "deleted_at": "2026-07-20 10:00:00",
+        "page_count": 1,
+        "uncertain_count": 0,
+        "managed": True,
+        "library_managed": True,
+        "collection_names": [],
+        "collection_ids": [],
+        "collection_paths": [],
+        "thumbnail_url": "/deleted-image",
+        "collections": [],
+        "tags": [],
+        "files": [],
+        "pages": [
+            {
+                "page_index": 0,
+                "thumbnail_url": "/deleted-image",
+                "image_url": "/deleted-image",
+                "model": "trocr-kurrent-19",
+                "profile": {},
+                "engine_runs": [],
+                "warnings": [],
+            }
+        ],
+    }
+    transcript = {
+        "document_id": document["id"],
+        "title": document["title"],
+        "line_count": 0,
+        "pages": [
+            {
+                "page_index": 0,
+                "width": 160,
+                "height": 120,
+                "reading_text": "",
+                "lines": [],
+            }
+        ],
+        "cloud_summary": {"line_count": 0, "models": [], "cost_usd": 0},
+        "model_versions": [],
+    }
+
+    def route_documents(route) -> None:
+        request_url = route.request.url
+        if request_url.endswith("/transcript"):
+            payload = transcript
+        elif request_url.endswith("/deleted-document"):
+            payload = document
+        elif "status=papierkorb" in request_url:
+            payload = [document]
+        else:
+            payload = []
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    with playwright.sync_playwright() as runtime:
+        browser = _browser(runtime)
+        page = browser.new_page(viewport={"width": 1320, "height": 860})
+        page.route("**/api/documents*", route_documents)
+        page.route(
+            "**/api/documents/deleted-document/transcript",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(transcript)
+            ),
+        )
+        page.route(
+            "**/api/documents/deleted-document",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(document)
+            ),
+        )
+        page.route("**/deleted-image*", lambda route: route.fulfill(path=image))
+        page.route(
+            "**/api/collections",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body="[]"
+            ),
+        )
+        page.goto(url)
+        page.get_by_role("button", name="Prüfen & suchen").click()
+        page.get_by_role("button", name="Papierkorb").click()
+        page.locator(".document-card").wait_for()
+        page.locator(".document-card").click()
+        page.wait_for_timeout(500)
+        assert page.locator(".reader-notice.deleted").count(), page.locator(
+            "#document-detail"
+        ).inner_text()
+
+        assert page.get_by_role("button", name="Wiederherstellen").first.is_visible()
+        assert page.get_by_role("button", name="Endgültig löschen").first.is_visible()
+        assert "Im Papierkorb" in page.locator(".reader-notice.deleted").inner_text()
         browser.close()
 
 

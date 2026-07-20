@@ -2,6 +2,16 @@
 
 ## 0.2.0 – 2026-07-18
 
+- sichtbarer Papierkorb im Dokumentkopf mit Wiederherstellen und bewusst getrenntem,
+  endgültigem Löschen verwalteter Originale
+- dokumentweite Fassungsumschaltung zeigt Hauptlesung und reine TrOCR-, CHURRO-, Kraken-,
+  Tesseract- und Cloud-Teilfassungen mit Abdeckungsgrad und Qualitätswarnungen
+- Cloud-Vergleich markiert jede geprüfte Zeile, Modell, Kosten und Abweichung; ältere formal
+  auffällige Antworten bleiben auditierbar, werden aber deutlich gewarnt
+- explizit gewählte Cloudmodelle werden nicht mehr durch das Layout-Routing überschrieben;
+  nur die neue Auswahl „Automatisch“ darf zwischen Sonnet und Gemini wählen
+- engere Einzelzeilen-Ausschnitte und Format-Gate verwerfen Cloud-Erklärungen sowie
+  hineingeratene Nachbarzeilen, ohne die Ausgabe still umzuschreiben
 - vollständiger Scan-/Text-Dokumentarbeitsplatz mit synchronen Zeilenmarkierungen,
   Original-/Aufbereitet-Ansicht, Transkription, Lesefassung und direkter Korrektur
 - verschachtelte Sammlungen und strukturierter Ordnerimport mit sichtbarem Zielpfad

@@ -25,7 +25,12 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, Field
 
-from schriftlotse.cloud import OpenRouterReviewer, cloud_model_status
+from schriftlotse.cloud import (
+    OpenRouterReviewer,
+    cloud_line_crop_bounds,
+    cloud_model_status,
+    resolve_cloud_profile,
+)
 from schriftlotse.config import AppPaths, Settings, resolve_executable
 from schriftlotse.database import Database
 from schriftlotse.domain import (
@@ -1594,21 +1599,20 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
             if prepared_path and prepared_path.is_file()
             else load_page(Path(row["source_path"]), int(row["source_page_index"]))
         )
-        x1, y1, x2, y2 = json.loads(row["bbox"])
-        padding = max(12, round((y2 - y1) * 0.45))
         crop = page.crop(
-            (
-                max(0, x1 - padding),
-                max(0, y1 - padding),
-                min(page.width, x2 + padding),
-                min(page.height, y2 + padding),
-            )
+            cloud_line_crop_bounds(json.loads(row["bbox"]), page.width, page.height)
         )
         variants = generate_variants(crop)
         optimized = variants[-1].image if variants else crop
         started = time.monotonic()
+        spent_before = reviewer.spent_usd
         try:
-            selected_option = reviewer.option(payload.profile)
+            page_profile = json.loads(row["profile"] or "{}")
+        except json.JSONDecodeError:
+            page_profile = {}
+        selected_profile = resolve_cloud_profile(payload.profile, page_profile.get("layout"))
+        try:
+            selected_option = reviewer.option(selected_profile)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         try:
@@ -1618,14 +1622,14 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
                 row["text"],
                 row["year"],
                 ScriptHint.AUTO,
-                profile=payload.profile,
+                profile=selected_profile,
             )
         except (RuntimeError, ValueError, json.JSONDecodeError, httpx.HTTPError) as error:
             app_state.database.record_cloud_usage(
                 line_id=line_id,
                 model=selected_option.model,
-                profile=payload.profile,
-                cost_usd=reviewer.spent_usd,
+                profile=selected_profile,
+                cost_usd=max(0.0, reviewer.spent_usd - spent_before),
                 duration_seconds=time.monotonic() - started,
                 status="fehlgeschlagen",
                 message=str(error),
@@ -1642,7 +1646,7 @@ def create_app(state: ApplicationState | None = None) -> FastAPI:
         app_state.database.record_cloud_usage(
             line_id=line_id,
             model=review.model,
-            profile=payload.profile,
+            profile=selected_profile,
             cost_usd=review.cost,
             duration_seconds=time.monotonic() - started,
             status="erfolgreich",
