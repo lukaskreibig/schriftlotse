@@ -24,13 +24,22 @@ if ! command -v tesseract >/dev/null 2>&1; then
 fi
 
 echo "SchriftLotse wird vorbereitet …"
-uv sync --frozen --extra models
+uv sync --frozen --extra models --extra mlx
 
 if ! uv run schriftlotse models core-ready >/dev/null 2>&1; then
-  echo "Für Kurrent-Handschrift wird TrOCR Kurrent samt lokalem Prozessor benötigt (ca. 1,2 GB)."
+  echo "Für historische Schriften und die Bedeutungssuche werden die freien lokalen Kernmodelle benötigt (ca. 4,2 GB)."
   read "models_answer?Empfohlene freie Kernmodelle jetzt lokal installieren? [J/n] "
   if [[ -z "$models_answer" || "$models_answer" == [JjYy]* ]]; then
     uv run schriftlotse models install-core
+  fi
+fi
+
+if ! uv run schriftlotse models best-ready >/dev/null 2>&1; then
+  echo "Für die beste lokale Qualität kann CHURRO 3B MLX 8-Bit installiert werden (ca. 4,4 GB)."
+  echo "Die Modellgewichte stehen unter der Qwen Research License und sind für Forschung/nichtkommerzielle Nutzung gedacht."
+  read "churro_answer?Lizenz bestätigen und CHURRO als lokalen Standard installieren? [J/n] "
+  if [[ -z "$churro_answer" || "$churro_answer" == [JjYy]* ]]; then
+    uv run schriftlotse models install-best --accept-research-license
   fi
 fi
 

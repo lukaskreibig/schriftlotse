@@ -4,6 +4,7 @@ import hashlib
 import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageOps, ImageSequence
 
@@ -12,6 +13,14 @@ from schriftlotse.domain import SourceDocument
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".heic", ".heif", ".webp", ".bmp"}
 TIFF_SUFFIXES = {".tif", ".tiff"}
 PDF_SUFFIXES = {".pdf"}
+GENERIC_TITLE = re.compile(
+    r"^(?:temp(?:orary)?image[\w-]*|image[\w-]*|scan[\s_-]*\d*|document[\s_-]*\d*|img[\s_-]*\d*)$",
+    flags=re.IGNORECASE,
+)
+
+
+def title_needs_review(title: str) -> bool:
+    return not title.strip() or bool(GENERIC_TITLE.fullmatch(title.strip()))
 
 
 def natural_key(path: Path) -> tuple[object, ...]:
@@ -33,7 +42,9 @@ def _document_id(paths: Sequence[Path]) -> str:
     return digest.hexdigest()[:20]
 
 
-def discover_documents(sources: Sequence[Path]) -> list[SourceDocument]:
+def discover_documents(
+    sources: Sequence[Path], *, group_images_by_folder: bool = True
+) -> list[SourceDocument]:
     documents: list[SourceDocument] = []
     explicit_images: list[Path] = []
     seen: set[Path] = set()
@@ -79,33 +90,143 @@ def discover_documents(sources: Sequence[Path]) -> list[SourceDocument]:
                 if images:
                     for image in images:
                         seen.add(image.resolve())
-                    documents.append(
-                        SourceDocument(
-                            id=_document_id(images),
-                            title=directory.name,
-                            source_paths=images,
-                            kind="images",
-                            page_count=len(images),
+                    groups = [images] if group_images_by_folder else [[image] for image in images]
+                    for group in groups:
+                        documents.append(
+                            SourceDocument(
+                                id=_document_id(group),
+                                title=(directory.name if group_images_by_folder else group[0].stem),
+                                source_paths=group,
+                                kind="images",
+                                page_count=len(group),
+                            )
                         )
-                    )
         else:
             add_file(source)
 
     if explicit_images:
         explicit_images.sort(key=natural_key)
-        title = (
-            explicit_images[0].parent.name if len(explicit_images) > 1 else explicit_images[0].stem
+        groups = (
+            [explicit_images] if group_images_by_folder else [[image] for image in explicit_images]
         )
-        documents.append(
-            SourceDocument(
-                id=_document_id(explicit_images),
-                title=title,
-                source_paths=explicit_images,
-                kind="images",
-                page_count=len(explicit_images),
+        for group in groups:
+            title = group[0].parent.name if len(group) > 1 else group[0].stem
+            documents.append(
+                SourceDocument(
+                    id=_document_id(group),
+                    title=title,
+                    source_paths=group,
+                    kind="images",
+                    page_count=len(group),
+                )
             )
-        )
     return sorted(documents, key=lambda item: (item.title.casefold(), item.id))
+
+
+def import_preview(sources: Sequence[Path], *, group_images_by_folder: bool = False) -> dict:
+    documents = discover_documents(sources, group_images_by_folder=group_images_by_folder)
+    proposals: list[dict[str, Any]] = []
+    for document in documents:
+        source_path = document.source_paths[0]
+        root = next(
+            (
+                candidate.resolve()
+                for candidate in sources
+                if candidate.is_dir()
+                and (
+                    source_path.resolve() == candidate.resolve()
+                    or candidate.resolve() in source_path.resolve().parents
+                )
+            ),
+            None,
+        )
+        relative_folder = ""
+        collection_path: list[str] = []
+        if root is not None:
+            relative = source_path.parent.resolve().relative_to(root)
+            relative_folder = relative.as_posix() if relative.parts else ""
+            collection_path = [root.name, *relative.parts]
+        proposals.append(
+            {
+                "id": document.id,
+                "title": document.title,
+                "kind": document.kind,
+                "pages": document.page_count,
+                "files": [path.name for path in document.source_paths],
+                "relative_folder": relative_folder,
+                "collection_path": collection_path,
+                "title_needs_review": title_needs_review(document.title),
+            }
+        )
+    grouped = discover_documents(sources, group_images_by_folder=True)
+    suggestions: list[dict[str, object]] = []
+    for document in grouped:
+        sequences: dict[str, list[Path]] = {}
+        for path in document.source_paths:
+            match = re.match(
+                r"^(.*?)(?:[-_ ]?(?:seite|page|scan))?[-_ ]*(\d+)$",
+                path.stem.casefold(),
+            )
+            if match:
+                signature = match.group(1).rstrip("-_ ") or document.title.casefold()
+                sequences.setdefault(signature, []).append(path)
+        for paths in sequences.values():
+            if len(paths) < 2:
+                continue
+            ordered = sorted(paths, key=natural_key)
+            suggestions.append(
+                {
+                    "folder": str(paths[0].parent.name),
+                    "title": document.title,
+                    "pages": len(ordered),
+                    "files": [path.name for path in ordered],
+                }
+            )
+    supported = IMAGE_SUFFIXES | TIFF_SUFFIXES | PDF_SUFFIXES
+
+    def tree_node(directory: Path, root: Path) -> dict[str, object]:
+        files = sorted(
+            (
+                path
+                for path in directory.iterdir()
+                if path.is_file() and path.suffix.casefold() in supported
+            ),
+            key=natural_key,
+        )
+        children = [
+            tree_node(child, root)
+            for child in sorted(
+                (path for path in directory.iterdir() if path.is_dir()),
+                key=lambda path: path.name.casefold(),
+            )
+        ]
+        return {
+            "name": directory.name,
+            "relative_path": ("" if directory == root else directory.relative_to(root).as_posix()),
+            "files": [path.name for path in files],
+            "file_count": len(files),
+            "document_count": sum(
+                1
+                for proposal in proposals
+                if proposal["collection_path"]
+                and proposal["collection_path"][-1] == directory.name
+                and proposal["relative_folder"]
+                == ("" if directory == root else directory.relative_to(root).as_posix())
+            ),
+            "children": children,
+        }
+
+    trees = [tree_node(source.resolve(), source.resolve()) for source in sources if source.is_dir()]
+    return {
+        "documents": proposals,
+        "document_count": len(proposals),
+        "page_count": sum(document.page_count for document in documents),
+        "series_suggestions": suggestions,
+        "group_images_by_folder": group_images_by_folder,
+        "folder_trees": trees,
+        "preserve_folder_structure": bool(trees),
+        "title_review_count": sum(1 for proposal in proposals if proposal["title_needs_review"]),
+    }
 
 
 def pdf_page_count(path: Path) -> int:
@@ -114,6 +235,28 @@ def pdf_page_count(path: Path) -> int:
     document = pdfium.PdfDocument(str(path))
     try:
         return len(document)
+    finally:
+        document.close()
+
+
+def pdf_text_layer(path: Path, page_index: int) -> str:
+    """Returns an existing PDF text layer as a candidate, never as trusted ground truth."""
+    import pypdfium2 as pdfium
+
+    document = pdfium.PdfDocument(str(path))
+    try:
+        if page_index < 0 or page_index >= len(document):
+            return ""
+        page = document[page_index]
+        text_page = page.get_textpage()
+        try:
+            character_count = text_page.count_chars()
+            return text_page.get_text_range(0, character_count).strip()
+        finally:
+            text_page.close()
+            page.close()
+    except Exception:
+        return ""
     finally:
         document.close()
 
