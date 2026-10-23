@@ -25,7 +25,7 @@ dependencies = [
   "lxml>=5.4,<7",
   "numpy>=2.2,<3",
   "opencv-python-headless>=4.11,<5",
-  "pillow>=11.2,<13",
+  "pillow>=13.0,<14",
   "pillow-heif>=1.1,<2",
   "platformdirs>=4.3,<5",
   "pydantic>=2.11,<3",
@@ -100,3 +100,9 @@ ignore_errors = true
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+
+[tool.uv]
+# Pillow 13.0 fixes ~35 decoder vulnerabilities (Oct 2026, incl. a Ghostscript
+# argument injection). gradio 6.30 still caps pillow<13 without a technical
+# reason we could find; tests and the UI smoke run green on 13.0.
+override-dependencies = ["pillow>=13.0,<14"]
