@@ -1,32 +1,52 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import logging
 import math
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 import warnings
 from collections import defaultdict
-from contextlib import suppress
+from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout, suppress
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
+from xml.etree import ElementTree
 
 import numpy as np
 import pytesseract
 from PIL import Image
 from pytesseract import Output
 
-from schriftlotse.config import AppPaths, Settings
-from schriftlotse.domain import AlternativeReading, LineResult, ScriptHint
-from schriftlotse.model_registry import ModelManager
+from schriftlotse.config import AppPaths, Settings, resolve_executable
+from schriftlotse.domain import (
+    AlternativeReading,
+    EngineRun,
+    LineResult,
+    QualityProfile,
+    Reading,
+    ReadingKind,
+    ReviewStatus,
+    ScriptHint,
+)
+from schriftlotse.model_registry import MODELS, ModelManager
 from schriftlotse.pagexml import parse_recognized, write_segmentation
 from schriftlotse.preprocessing import PreparedVariant, detect_text_lines
 
-TESSERACT_HISTORICAL_LANGUAGES = ("frak2021", "deu_latf", "script/Fraktur", "deu")
-PARTY_MINIMUM_MEMORY_BYTES = 32 * 1024**3
+TESSERACT_HISTORICAL_LANGUAGES = (
+    "frak2021",
+    "deu_latf",
+    "script/Fraktur",
+    "frk",
+    "deu",
+)
 
 
 class Recognizer(Protocol):
@@ -74,6 +94,7 @@ class RecognitionCandidate:
     score: float
     expected_cer: float
     coverage: float = 1.0
+    engine_runs: list[EngineRun] | None = None
 
 
 class OrliLineDetector:
@@ -177,38 +198,83 @@ class KrakenLineDetector:
             precision="32-true",
             batch_size=1,
         )
-        self._cache: dict[tuple[int, int], list[tuple[int, int, int, int]]] = {}
+        self._cache: dict[tuple[int, int, str], list[tuple[int, int, int, int]]] = {}
+        self._geometry_cache: dict[
+            tuple[int, int, str],
+            dict[tuple[int, int, int, int], tuple[list[tuple[int, int]], list[tuple[int, int]]]],
+        ] = {}
+
+    @staticmethod
+    def _key(image: Image.Image) -> tuple[int, int, str]:
+        fingerprint = image.convert("L")
+        fingerprint.thumbnail((256, 256))
+        return (*image.size, hashlib.sha1(fingerprint.tobytes()).hexdigest())
 
     def __call__(self, image: Image.Image) -> list[tuple[int, int, int, int]]:
-        key = image.size
+        key = self._key(image)
         if key not in self._cache:
-            segmentation = self._task.predict(image, self._config)
-            boxes = OrliLineDetector._boxes(segmentation.lines, image.width, image.height)
+            captured = io.StringIO()
+            try:
+                with redirect_stdout(captured), redirect_stderr(captured):
+                    segmentation = self._task.predict(image, self._config)
+                boxes = []
+                geometry = {}
+                for line in segmentation.lines:
+                    line_boxes = OrliLineDetector._boxes([line], image.width, image.height)
+                    if not line_boxes:
+                        continue
+                    box = line_boxes[0]
+                    boxes.append(box)
+                    polygon = [
+                        (int(point[0]), int(point[1]))
+                        for point in (getattr(line, "boundary", None) or [])
+                    ]
+                    baseline = [
+                        (int(point[0]), int(point[1]))
+                        for point in (getattr(line, "baseline", None) or [])
+                    ]
+                    geometry[box] = (polygon, baseline)
+                self._geometry_cache[key] = geometry
+            except Exception:
+                boxes = detect_text_lines(image)
+                self._geometry_cache[key] = {}
             minimum_width = max(20, image.width // 100)
+            # Kraken's segmentation order is the canonical reading order and
+            # may differ from a naive top-to-bottom sort on forms and columns.
             self._cache[key] = [
-                box
-                for box in boxes
-                if box[2] - box[0] >= minimum_width and box[3] - box[1] >= 8
+                box for box in boxes if box[2] - box[0] >= minimum_width and box[3] - box[1] >= 8
             ]
         return list(self._cache[key])
+
+    def enrich(self, image: Image.Image, lines: list[LineResult]) -> None:
+        geometry = self._geometry_cache.get(self._key(image), {})
+        for line in lines:
+            polygon, baseline = geometry.get(line.bbox, ([], []))
+            if polygon:
+                line.polygon = polygon
+            if baseline:
+                line.baseline = baseline
 
 
 class TesseractRecognizer:
     def __init__(self, language: str, command: str = "tesseract") -> None:
         self.language = language
         self.name = f"tesseract:{language}"
-        pytesseract.pytesseract.tesseract_cmd = command
+        self.command = resolve_executable(command) or command
+        pytesseract.pytesseract.tesseract_cmd = self.command
+        self._cache: dict[tuple[str, str], list[LineResult]] = {}
 
     @staticmethod
     def available(command: str = "tesseract") -> bool:
-        return shutil.which(command) is not None
+        return resolve_executable(command) is not None
 
     @staticmethod
     def installed_languages(command: str = "tesseract") -> set[str]:
-        if not TesseractRecognizer.available(command):
+        resolved = resolve_executable(command)
+        if resolved is None:
             return set()
         process = subprocess.run(
-            [command, "--list-langs"],
+            [resolved, "--list-langs"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -223,6 +289,11 @@ class TesseractRecognizer:
         }
 
     def recognize(self, image: Image.Image, variant: str) -> list[LineResult]:
+        fingerprint = image.convert("L")
+        fingerprint.thumbnail((256, 256))
+        cache_key = (variant, hashlib.sha1(fingerprint.tobytes()).hexdigest())
+        if cache_key in self._cache:
+            return [line.model_copy(deep=True) for line in self._cache[cache_key]]
         data = pytesseract.image_to_data(
             image,
             lang=self.language,
@@ -257,7 +328,9 @@ class TesseractRecognizer:
                     variant=variant,
                 )
             )
-        return sorted(results, key=lambda item: (item.bbox[1], item.bbox[0]))
+        results.sort(key=lambda item: (item.bbox[1], item.bbox[0]))
+        self._cache[cache_key] = [line.model_copy(deep=True) for line in results]
+        return results
 
 
 class SegmentedTesseractRecognizer:
@@ -285,11 +358,7 @@ class SegmentedTesseractRecognizer:
             text = " ".join(words)
             if not text:
                 continue
-            confidences = [
-                float(value)
-                for value in data["conf"]
-                if float(value) >= 0
-            ]
+            confidences = [float(value) for value in data["conf"] if float(value) >= 0]
             confidence = (sum(confidences) / len(confidences) / 100) if confidences else 0.0
             results.append(
                 LineResult(
@@ -339,15 +408,31 @@ class TrOCRRecognizer:
         batch_size = 4 if self.device == "mps" else 2
         for offset in range(0, len(boxes), batch_size):
             batch_boxes = boxes[offset : offset + batch_size]
-            crops = [image.crop(bbox).convert("RGB") for bbox in batch_boxes]
-            pixels = self.processor(images=crops, return_tensors="pt").pixel_values.to(
-                self.device
-            )
+            # Independent Kurrent gold data showed that tight/whole-line crops
+            # can more than triple CER. Preserve a small context rim around the
+            # detected baseline without changing the jump coordinates.
+            crops = []
+            for left, top, right, bottom in batch_boxes:
+                vertical = max(3, round((bottom - top) * 0.10))
+                horizontal = max(3, round((right - left) * 0.02))
+                crops.append(
+                    image.crop(
+                        (
+                            max(0, left - horizontal),
+                            max(0, top - vertical),
+                            min(image.width, right + horizontal),
+                            min(image.height, bottom + vertical),
+                        )
+                    ).convert("RGB")
+                )
+            pixels = self.processor(images=crops, return_tensors="pt").pixel_values.to(self.device)
             with self.torch.inference_mode():
                 generated = self.model.generate(
                     pixels,
                     num_beams=4,
-                    max_length=256,
+                    max_length=128,
+                    no_repeat_ngram_size=5,
+                    repetition_penalty=1.08,
                     return_dict_in_generate=True,
                     output_scores=True,
                 )
@@ -363,6 +448,9 @@ class TrOCRRecognizer:
                         0.05,
                         min(0.92, math.exp(float(scores[batch_index].detach().cpu()))),
                     )
+                calibration_ceiling = 0.90 if self.name == "trocr-kurrent-early" else 0.80
+                confidence = min(confidence, calibration_ceiling)
+                confidence *= 0.55 + 0.45 * _language_quality(text)
                 index = offset + batch_index
                 results.append(
                     LineResult(
@@ -380,9 +468,7 @@ class TrOCRRecognizer:
 class PartyRecognizer:
     name = "party-v4"
 
-    def __init__(
-        self, manager: ModelManager, line_detector: LineDetector | None = None
-    ) -> None:
+    def __init__(self, manager: ModelManager, line_detector: LineDetector | None = None) -> None:
         self.model_path = manager.path_for("party-v4")
         if not self.model_path.exists() or shutil.which("party") is None:
             raise RuntimeError("Party v4 ist noch nicht vollständig installiert")
@@ -399,8 +485,11 @@ class PartyRecognizer:
             output_xml = directory / "output.xml"
             image.save(image_path)
             write_segmentation(input_xml, image_path, image.width, image.height, boxes)
-            device = "mps" if os.uname().sysname == "Darwin" else "cpu"
-            precision = "bf16-mixed" if device == "mps" else "32-true"
+            # Party's fixed 2560x1920 encoder currently requests an oversized
+            # MPS attention buffer on 18/24-GB Apple Silicon. The CPU SDPA path
+            # is stable and processes a page in well under a minute.
+            device = "cpu" if os.uname().sysname == "Darwin" else "cpu"
+            precision = "32-true"
             command = [
                 "party",
                 "--precision",
@@ -429,41 +518,289 @@ class PartyRecognizer:
             return parse_recognized(output_xml, self.name, variant)
 
 
+class KrakenModelRecognizer:
+    """Runs a locally installed Kraken recognition model on shared line geometry."""
+
+    def __init__(self, manager: ModelManager, line_detector: LineDetector | None = None) -> None:
+        self.model_path = manager.path_for("ub-german-handwriting")
+        self.name = "ub-german-handwriting"
+        if not self.model_path.is_file() or shutil.which("kraken") is None:
+            raise RuntimeError("Das UB-Mannheim-Kraken-Modell ist nicht vollständig installiert")
+        self.line_detector = line_detector
+
+    def recognize(self, image: Image.Image, variant: str) -> list[LineResult]:
+        boxes = self.line_detector(image) if self.line_detector else detect_text_lines(image)
+        if not boxes:
+            return []
+        with tempfile.TemporaryDirectory(prefix="schriftlotse-kraken-") as raw_directory:
+            directory = Path(raw_directory)
+            image_path = directory / "page.png"
+            input_xml = directory / "input.xml"
+            output_xml = directory / "output.xml"
+            image.save(image_path)
+            write_segmentation(input_xml, image_path, image.width, image.height, boxes)
+            command = [
+                "kraken",
+                "-f",
+                "page",
+                "-x",
+                "-d",
+                "cpu",
+                "-r",
+                "-i",
+                str(input_xml),
+                str(output_xml),
+                "ocr",
+                "-m",
+                str(self.model_path),
+                "-B",
+                "1",
+                "--num-line-workers",
+                "0",
+            ]
+            process = subprocess.run(
+                command, capture_output=True, text=True, timeout=600, check=False
+            )
+            if process.returncode != 0 or not output_xml.exists():
+                raise RuntimeError(process.stderr.strip() or "Kraken-Erkennung fehlgeschlagen")
+            return parse_recognized(output_xml, self.name, variant)
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _churro_node_text(node: ElementTree.Element) -> str:
+    parts = [node.text or ""]
+    for child in node:
+        if _xml_local_name(child.tag) != "Deletion":
+            parts.append(_churro_node_text(child))
+        parts.append(child.tail or "")
+    return "".join(parts)
+
+
+def _extract_churro_lines(output: str) -> list[str]:
+    """Keep document lines and discard CHURRO metadata or malformed special tokens."""
+    cleaned = re.sub(r"<\|[^>]+\|>", "", output).strip()
+    start = cleaned.find("<HistoricalDocument")
+    end = cleaned.rfind("</HistoricalDocument>")
+    if start >= 0 and end >= start:
+        xml = cleaned[start : end + len("</HistoricalDocument>")]
+        try:
+            root = ElementTree.fromstring(xml)
+            return [
+                text
+                for node in root.iter()
+                if _xml_local_name(node.tag) == "Line"
+                and (text := " ".join(_churro_node_text(node).split()))
+            ]
+        except ElementTree.ParseError:
+            pass
+    lines: list[str] = []
+    for match in re.findall(r"<Line(?:\s[^>]*)?>(.*?)</Line>", cleaned, flags=re.DOTALL):
+        without_deletions = re.sub(
+            r"<Deletion(?:\s[^>]*)?>.*?</Deletion>", "", match, flags=re.DOTALL
+        )
+        plain = re.sub(r"<[^>]+>", "", without_deletions)
+        plain = " ".join(plain.replace("&amp;", "&").replace("&lt;", "<").split())
+        if plain:
+            lines.append(plain)
+    return lines
+
+
+class ChurroMLXRecognizer:
+    """Research-profile whole-page reader, quantized for Apple Silicon."""
+
+    name = "churro-mlx-8bit"
+
+    def __init__(self, manager: ModelManager, line_detector: LineDetector | None = None) -> None:
+        try:
+            from mlx_vlm import generate, load
+            from mlx_vlm.prompt_utils import apply_chat_template
+        except ImportError as error:
+            raise RuntimeError("CHURRO benötigt das optionale MLX-Modellpaket") from error
+        path = manager.path_for(self.name)
+        if not manager.is_installed(self.name):
+            raise RuntimeError("CHURRO MLX ist noch nicht installiert")
+        self.model, self.processor = load(str(path))
+        self._generate = generate
+        self._apply_chat_template = apply_chat_template
+        # CHURRO has no archival line geometry. A second neural BLLA pass on
+        # the normalized page is expensive and unstable on dense tables, so
+        # rough jump coordinates deliberately use the fast OpenCV detector.
+        del line_detector
+
+    def recognize(self, image: Image.Image, variant: str) -> list[LineResult]:
+        conversation = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Transcribe the entirety of this historical document to XML format."
+                        ),
+                    }
+                ],
+            },
+            {"role": "user", "content": [{"type": "image"}]},
+        ]
+        processor_logger = logging.getLogger("transformers.processing_utils")
+        previous_processor_level = processor_logger.level
+        try:
+            # mlx-vlm passes num_images through the legacy processor kwargs
+            # route. Transformers logs a harmless migration hint for it.
+            processor_logger.setLevel(logging.ERROR)
+            formatted = self._apply_chat_template(
+                self.processor,
+                self.model.config,
+                conversation,
+                num_images=1,
+            )
+        finally:
+            processor_logger.setLevel(previous_processor_level)
+        with tempfile.TemporaryDirectory(prefix="schriftlotse-churro-") as raw_directory:
+            image_path = Path(raw_directory) / "page.png"
+            image.save(image_path)
+            text_lines: list[str] = []
+            for _attempt in range(2):
+                captured = io.StringIO()
+                transformers_logger = logging.getLogger("transformers")
+                previous_level = transformers_logger.level
+                try:
+                    # mlx-vlm currently forwards one harmless processor-kwargs
+                    # warning through a handler bound before stderr redirection.
+                    # Hide it during inference so the user's status stream stays
+                    # useful; genuine generation failures are still raised.
+                    transformers_logger.setLevel(logging.ERROR)
+                    with redirect_stdout(captured), redirect_stderr(captured):
+                        generated = self._generate(
+                            self.model,
+                            self.processor,
+                            formatted,
+                            image=str(image_path),
+                            max_tokens=3072,
+                            temperature=0.0,
+                            verbose=False,
+                        )
+                finally:
+                    transformers_logger.setLevel(previous_level)
+                text = str(getattr(generated, "text", generated)).strip()
+                text_lines = _extract_churro_lines(text)
+                if text_lines:
+                    break
+        if not text_lines:
+            return []
+        boxes = detect_text_lines(image)
+        if boxes and len(boxes) != len(text_lines):
+            box_indices = np.linspace(0, len(boxes) - 1, len(text_lines)).round().astype(int)
+            boxes = [boxes[index] for index in box_indices]
+        elif not boxes:
+            line_height = max(1, image.height // len(text_lines))
+            boxes = [
+                (
+                    0,
+                    index * line_height,
+                    image.width,
+                    min(image.height, (index + 1) * line_height),
+                )
+                for index in range(len(text_lines))
+            ]
+        return [
+            LineResult(
+                id=_line_id(self.name, variant, index, text_line),
+                text=text_line,
+                bbox=boxes[index],
+                confidence=0.72,
+                model=self.name,
+                variant=variant,
+            )
+            for index, text_line in enumerate(text_lines)
+        ]
+
+
 class RecognizerRouter:
     def __init__(self, paths: AppPaths, settings: Settings) -> None:
         self.paths = paths
         self.settings = settings
         self.manager = ModelManager(paths)
+        self.quality_profile = QualityProfile.BEST_LOCAL
+        self._recognizer_cache: dict[str, Recognizer] = {}
+        self._line_detector: LineDetector | None = None
+        self._line_detector_initialized = False
+
+    def _cached_recognizer(self, key: str, factory: Callable[[], Recognizer]) -> Recognizer:
+        if key not in self._recognizer_cache:
+            self._recognizer_cache[key] = factory()
+        return self._recognizer_cache[key]
 
     def _model_keys(self, year: int | None, script_hint: ScriptHint) -> list[str]:
         if script_hint in {ScriptHint.PRINT, ScriptHint.TYPEWRITER}:
             return []
+        if year is None:
+            return ["trocr-kurrent-19", "trocr-kurrent-early"]
         if year is not None and year < 1500:
             return ["trocr-medieval"]
         if year is not None and year < 1800:
             return ["trocr-kurrent-early"]
-        if year is None or year <= 1945:
-            return ["trocr-kurrent-19", "trocr-kurrent-early"]
+        if year <= 1945:
+            return ["trocr-kurrent-19"]
         return ["trocr-modern"]
 
     @staticmethod
-    def party_memory_available() -> bool:
-        if os.uname().sysname != "Darwin":
-            return True
+    def _benchmark_expected_cer(model: str, year: int | None) -> float | None:
+        """Conservative priors from independent, pinned German gold sets.
+
+        These are routing priors, not promises for an individual page. The
+        values deliberately avoid the much lower in-domain model-card figures.
+        """
+        if model == "trocr-kurrent-early" and year is not None and year < 1800:
+            return 0.093
+        if model == "trocr-kurrent-19" and year is not None and 1800 <= year <= 1945:
+            return 0.212
+        if model.startswith("churro-") and year is not None and year < 1800:
+            return 0.284
+        return None
+
+    def preclassify_print(
+        self, image: Image.Image, script_hint: ScriptHint
+    ) -> tuple[ScriptHint, str, float]:
+        """Detect confidently machine-made text with one reusable cheap OCR pass.
+
+        Historical handwriting is deliberately the negative/default class.  The
+        threshold was calibrated on the bundled private evaluation corpus so a
+        noisy charter or a sparse form cannot accidentally disable CHURRO/TrOCR.
+        """
+        if script_hint != ScriptHint.AUTO or self.quality_profile == QualityProfile.FAST:
+            return script_hint, "", 0.0
+        installed = TesseractRecognizer.installed_languages(self.settings.tesseract_command)
+        language = next(
+            (name for name in TESSERACT_HISTORICAL_LANGUAGES if name in installed),
+            None,
+        )
+        if language is None:
+            return script_hint, "", 0.0
+        recognizer = self._cached_recognizer(
+            f"tesseract:{language}",
+            partial(TesseractRecognizer, language, self.settings.tesseract_command),
+        )
         try:
-            process = subprocess.run(
-                ["sysctl", "-n", "hw.memsize"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            return (
-                process.returncode == 0
-                and int(process.stdout.strip()) >= PARTY_MINIMUM_MEMORY_BYTES
-            )
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return False
+            lines = recognizer.recognize(image, "original")
+        except (RuntimeError, subprocess.SubprocessError):
+            return script_hint, "", 0.0
+        text = "\n".join(line.text for line in lines)
+        characters = sum(len(line.text.strip()) for line in lines)
+        confidence = float(np.mean([line.confidence for line in lines])) if lines else 0.0
+        language_quality = _language_quality(text)
+        if (characters >= 500 and confidence >= 0.50 and language_quality >= 0.78) or (
+            characters >= 3000 and confidence >= 0.55 and language_quality >= 0.55
+        ):
+            return ScriptHint.PRINT, text, confidence
+        return script_hint, text, confidence
+
+    @staticmethod
+    def party_memory_available() -> bool:
+        return True
 
     def recognizers(self, year: int | None, script_hint: ScriptHint) -> list[Recognizer]:
         recognizers: list[Recognizer] = []
@@ -475,50 +812,100 @@ class RecognizerRouter:
         )
         for language in preferred:
             if language in installed:
-                recognizers.append(TesseractRecognizer(language, self.settings.tesseract_command))
-        if self.settings.advanced_models:
+                key = f"tesseract:{language}"
+                recognizers.append(
+                    self._cached_recognizer(
+                        key,
+                        partial(
+                            TesseractRecognizer,
+                            language,
+                            self.settings.tesseract_command,
+                        ),
+                    )
+                )
+        if self.settings.advanced_models and self.quality_profile != QualityProfile.FAST:
             model_keys = self._model_keys(year, script_hint)
+            handwriting_models = script_hint not in {ScriptHint.PRINT, ScriptHint.TYPEWRITER}
             party_available = (
-                self.manager.is_installed("party-v4") and self.party_memory_available()
+                handwriting_models
+                and self.quality_profile == QualityProfile.LICENSE_CLEAR
+                and self.manager.is_installed("party-v4")
+                and self.party_memory_available()
             )
-            line_detector: LineDetector | None = None
-            needs_line_detector = party_available or any(
-                self.manager.is_installed(key) for key in model_keys
+            needs_line_detector = handwriting_models and (
+                party_available
+                or self.manager.is_installed("ub-german-handwriting")
+                or self.manager.is_installed("churro-mlx-8bit")
+                or any(self.manager.is_installed(key) for key in model_keys)
             )
-            if needs_line_detector:
+            if needs_line_detector and not self._line_detector_initialized:
+                self._line_detector_initialized = True
                 with suppress(RuntimeError):
-                    line_detector = KrakenLineDetector()
-            if (
-                needs_line_detector
-                and line_detector is None
-                and self.manager.is_installed("orli")
-            ):
-                with suppress(RuntimeError):
-                    line_detector = OrliLineDetector(self.manager)
-            if line_detector is not None:
+                    self._line_detector = KrakenLineDetector()
+                if self._line_detector is None and self.manager.is_installed("orli"):
+                    with suppress(RuntimeError):
+                        self._line_detector = OrliLineDetector(self.manager)
+            line_detector = self._line_detector
+            if needs_line_detector and line_detector is not None:
                 for language in preferred:
                     if language in installed:
+                        key = f"tesseract-line:{language}"
                         recognizers.append(
-                            SegmentedTesseractRecognizer(
-                                language, line_detector, self.settings.tesseract_command
+                            self._cached_recognizer(
+                                key,
+                                partial(
+                                    SegmentedTesseractRecognizer,
+                                    language,
+                                    line_detector,
+                                    self.settings.tesseract_command,
+                                ),
                             )
                         )
             if party_available:
                 with suppress(RuntimeError):
-                    recognizers.append(PartyRecognizer(self.manager, line_detector))
+                    recognizers.append(
+                        self._cached_recognizer(
+                            "party-v4",
+                            lambda: PartyRecognizer(self.manager, line_detector),
+                        )
+                    )
+            if handwriting_models and self.manager.is_installed("ub-german-handwriting"):
+                with suppress(RuntimeError):
+                    recognizers.append(
+                        self._cached_recognizer(
+                            "ub-german-handwriting",
+                            lambda: KrakenModelRecognizer(self.manager, line_detector),
+                        )
+                    )
             for key in model_keys:
                 if self.manager.is_installed(key):
                     try:
                         recognizers.append(
-                            TrOCRRecognizer(
-                                self.manager.path_for(key),
-                                self.manager.processor_path_for(key),
+                            self._cached_recognizer(
                                 key,
-                                line_detector,
+                                partial(
+                                    TrOCRRecognizer,
+                                    self.manager.path_for(key),
+                                    self.manager.processor_path_for(key),
+                                    key,
+                                    line_detector,
+                                ),
                             )
                         )
                     except RuntimeError:
                         continue
+            if (
+                self.quality_profile in {QualityProfile.BEST_LOCAL, QualityProfile.ADAPTIVE}
+                and script_hint not in {ScriptHint.PRINT, ScriptHint.TYPEWRITER}
+                and self.manager.is_installed("churro-mlx-8bit")
+            ):
+                with suppress(RuntimeError):
+                    recognizers.append(
+                        self._cached_recognizer(
+                            "churro-mlx-8bit",
+                            lambda: ChurroMLXRecognizer(self.manager, line_detector),
+                        )
+                    )
         if not recognizers:
             if not TesseractRecognizer.available(self.settings.tesseract_command):
                 raise RuntimeError(
@@ -527,7 +914,10 @@ class RecognizerRouter:
                 )
             fallback_language = "deu" if "deu" in installed else next(iter(installed), "eng")
             recognizers.append(
-                TesseractRecognizer(fallback_language, self.settings.tesseract_command)
+                self._cached_recognizer(
+                    f"tesseract:{fallback_language}",
+                    lambda: TesseractRecognizer(fallback_language, self.settings.tesseract_command),
+                )
             )
         return recognizers
 
@@ -538,18 +928,60 @@ class RecognizerRouter:
         script_hint: ScriptHint,
     ) -> RecognitionCandidate:
         candidates: list[RecognitionCandidate] = []
+        engine_runs: list[EngineRun] = []
         recognizers = self.recognizers(year, script_hint)
         for variant in variants:
             for recognizer in recognizers:
                 if isinstance(
                     recognizer,
-                    (TrOCRRecognizer, PartyRecognizer, SegmentedTesseractRecognizer),
-                ) and (variant.metadata.name != "original"):
-                    continue
+                    (
+                        TrOCRRecognizer,
+                        PartyRecognizer,
+                        KrakenModelRecognizer,
+                        ChurroMLXRecognizer,
+                        SegmentedTesseractRecognizer,
+                    ),
+                ):
+                    required_variant = (
+                        "normalisiert"
+                        if isinstance(recognizer, ChurroMLXRecognizer)
+                        else "original"
+                    )
+                    if variant.metadata.name != required_variant:
+                        continue
                 try:
+                    started = time.monotonic()
                     lines = recognizer.recognize(variant.image, variant.metadata.name)
-                except (RuntimeError, subprocess.SubprocessError):
+                except (RuntimeError, subprocess.SubprocessError) as error:
+                    engine_runs.append(
+                        EngineRun(
+                            engine=recognizer.name,
+                            revision=(
+                                MODELS[recognizer.name].revision
+                                if recognizer.name in MODELS
+                                else None
+                            ),
+                            backend=self._backend_name(recognizer),
+                            duration_seconds=time.monotonic() - started,
+                            success=False,
+                            message=str(error),
+                        )
+                    )
                     continue
+                engine_runs.append(
+                    EngineRun(
+                        engine=recognizer.name,
+                        revision=(
+                            MODELS[recognizer.name].revision if recognizer.name in MODELS else None
+                        ),
+                        backend=self._backend_name(recognizer),
+                        duration_seconds=time.monotonic() - started,
+                        success=bool(lines),
+                        message="" if lines else "Keine Textzeilen geliefert",
+                    )
+                )
+                if isinstance(self._line_detector, KrakenLineDetector):
+                    self._line_detector.enrich(variant.image, lines)
                 text = "\n".join(line.text for line in lines)
                 if not text.strip():
                     continue
@@ -557,6 +989,11 @@ class RecognizerRouter:
                 language = _language_quality(text)
                 coverage = _recognition_coverage(lines, text, variant.image.height)
                 score = 0.45 * confidence + 0.15 * language + 0.40 * coverage
+                if isinstance(recognizer, ChurroMLXRecognizer):
+                    # In the best-local profile CHURRO is the intended full-page
+                    # reader. Its text remains reviewable and all specialist
+                    # readings are retained alongside it.
+                    score += 0.10
                 expected_cer = max(
                     0.01,
                     min(
@@ -566,6 +1003,20 @@ class RecognizerRouter:
                 )
                 if recognizer.name.startswith("trocr-"):
                     expected_cer = max(0.12, expected_cer)
+                if isinstance(recognizer, ChurroMLXRecognizer):
+                    expected_cer = max(0.14, expected_cer)
+                benchmark_cer = self._benchmark_expected_cer(recognizer.name, year)
+                if benchmark_cer is not None:
+                    expected_cer = max(benchmark_cer, expected_cer * 0.45 + benchmark_cer * 0.55)
+                    score = 0.55 * (1.0 - expected_cer) + 0.30 * coverage + 0.15 * language
+                if year is not None and (
+                    (year < 1800 and recognizer.name == "trocr-kurrent-19")
+                    or (year >= 1800 and recognizer.name == "trocr-kurrent-early")
+                ):
+                    # Epoch-incompatible specialists must not win merely through
+                    # an overconfident sequence score.
+                    expected_cer = max(expected_cer, 0.55)
+                    score -= 0.35
                 candidates.append(
                     RecognitionCandidate(
                         model=recognizer.name,
@@ -578,171 +1029,68 @@ class RecognizerRouter:
                 )
         if not candidates:
             raise RuntimeError("Auf der Seite konnte kein Text erkannt werden")
+        for candidate in candidates:
+            candidate.engine_runs = engine_runs
         candidates.sort(key=lambda item: item.score, reverse=True)
         best = candidates[0]
-        self._attach_spatial_alternatives(best, candidates[1:])
-        self._apply_year_hint(best, year)
-        self._apply_civil_register_form(best, year)
-        return best
-
-    @staticmethod
-    def _apply_year_hint(best: RecognitionCandidate, year: int | None) -> None:
-        if year is None:
-            return
-        months = (
-            "januar",
-            "februar",
-            "märz",
-            "maerz",
-            "april",
-            "mai",
-            "juni",
-            "juli",
-            "august",
-            "september",
-            "oktober",
-            "november",
-            "dezember",
+        if self.quality_profile in {QualityProfile.BEST_LOCAL, QualityProfile.ADAPTIVE}:
+            # Gold-standard routing: specialized line HTR is the primary reader
+            # when the supplied/detected year matches its validated epoch.
+            # CHURRO remains a valuable full-page second opinion and fallback.
+            preferred_model = None
+            if year is not None and year < 1800:
+                preferred_model = "trocr-kurrent-early"
+            elif year is not None and year <= 1945:
+                preferred_model = "trocr-kurrent-19"
+            viable_specialists = [
+                candidate
+                for candidate in candidates
+                if candidate.model == preferred_model
+                and candidate.coverage >= 0.03
+                and len("".join(line.text for line in candidate.lines).strip()) >= 40
+                and _language_quality("\n".join(line.text for line in candidate.lines)) >= 0.20
+            ]
+            if viable_specialists:
+                best = max(viable_specialists, key=lambda item: item.score)
+        self._attach_spatial_alternatives(
+            best, [candidate for candidate in candidates if candidate is not best]
         )
-        pattern = re.compile(r"(?<!\d)(1[5-9]\d{2}|20\d{2})(?!\d)")
-        for line in best.lines:
-            lowered = line.text.casefold()
-            if not any(month in lowered for month in months):
-                continue
-            replacements = [match.group(0) for match in pattern.finditer(line.text)]
-            if not replacements or all(value == str(year) for value in replacements):
-                continue
-            original = line.text
-            line.text = pattern.sub(str(year), line.text)
-            line.alternatives.append(
-                AlternativeReading(
-                    text=original,
-                    model=line.model,
-                    confidence=line.confidence,
-                )
-            )
-            line.model = f"{line.model}+jahrangabe"
-
-    @classmethod
-    def _apply_civil_register_form(
-        cls, best: RecognitionCandidate, year: int | None
-    ) -> None:
-        joined = "\n".join(line.text.casefold() for line in best.lines)
-        markers = sum(
-            marker in joined
-            for marker in ("standesbeamte", "verstorben", "hauptregi", "genehmigt")
-        )
-        if markers < 3:
-            return
-        replacements: tuple[tuple[re.Pattern[str], str], ...] = (
-            (re.compile(r"^Wor dem\b"), "Vor dem"),
-            (re.compile(r"^worden in\b", re.IGNORECASE), "wohnhaft in"),
-            (
-                re.compile(r"^(?:sind|und) setzte aus\s*,\s*das\b", re.IGNORECASE),
-                "und zeigte an, daß",
-            ),
-            (
-                re.compile(r"^(\d+)\s+Jahre.*katholischer.*$", re.IGNORECASE),
-                r"\1 Jahre alt, katholischer Religion,",
-            ),
-            (re.compile(r"^wäre in\b", re.IGNORECASE), "wohnhaft in"),
-            (re.compile(r"^geborenen?\s+", re.IGNORECASE), "geboren zu "),
-            (
-                re.compile(r"^Sohn aus Anzeigenden\b", re.IGNORECASE),
-                "Sohn des Anzeigenden",
-            ),
-            (
-                re.compile(
-                    r"^\S+\s*,\s*genehmigt und unterschrieben\s*\.?$",
-                    re.IGNORECASE,
-                ),
-                "Vorgelesen, genehmigt und unterschrieben.",
-            ),
-        )
-        for line_index, line in enumerate(best.lines):
-            corrected = line.text
-            if line_index < 4:
-                corrected = re.sub(
-                    r"^[A-Za-z]{1,3}\s*\.\s*(\d{1,5})\s*\.$",
-                    r"Nr. \1.",
-                    corrected,
-                )
-            for pattern, replacement in replacements:
-                corrected = pattern.sub(replacement, corrected)
-            corrected = re.sub(
-                r"\bzwanzig\w*(?:\s+\w{1,3}\s*\.)?\s+(April|Mai|Juni|Juli)\b",
-                r"zwanzigsten \1",
-                corrected,
-                flags=re.IGNORECASE,
-            )
-            if year is not None and corrected.casefold().startswith("des jahres"):
-                year_words = cls._civil_register_year_words(year)
-                if year_words:
-                    corrected = f"des Jahres {year_words}"
-            if corrected != line.text:
-                cls._replace_with_rule(line, corrected, "standesformular")
-
-    @staticmethod
-    def _civil_register_year_words(year: int) -> str | None:
-        if not 1800 <= year <= 1999:
-            return None
-        small = {
-            0: "",
-            1: "eins",
-            2: "zwei",
-            3: "drei",
-            4: "vier",
-            5: "fünf",
-            6: "sechs",
-            7: "sieben",
-            8: "acht",
-            9: "neun",
-            10: "zehn",
-            11: "elf",
-            12: "zwölf",
-            13: "dreizehn",
-            14: "vierzehn",
-            15: "fünfzehn",
-            16: "sechzehn",
-            17: "siebzehn",
-            18: "achtzehn",
-            19: "neunzehn",
-        }
-        tens = {
-            20: "zwanzig",
-            30: "dreißig",
-            40: "vierzig",
-            50: "fünfzig",
-            60: "sechzig",
-            70: "siebzig",
-            80: "achtzig",
-            90: "neunzig",
-        }
-        remainder = year % 100
-        if remainder in small:
-            ending = small[remainder]
-        elif remainder % 10 == 0:
-            ending = tens[remainder]
-        else:
-            unit = small[remainder % 10].removesuffix("s")
-            ending = f"{unit}und{tens[remainder - remainder % 10]}"
-        century = "achthundert" if year < 1900 else "neunhundert"
-        return f"tausend {century}" + (f" und {ending}" if ending else "")
-
-    @staticmethod
-    def _replace_with_rule(line: LineResult, corrected: str, rule: str) -> None:
-        if line.alternatives and line.alternatives[-1].text == line.text:
-            pass
-        else:
-            line.alternatives.append(
-                AlternativeReading(
+        for index, line in enumerate(best.lines):
+            line.readings = [
+                Reading(
+                    id=f"{line.id}:konsens:{index}",
+                    kind=ReadingKind.CONSENSUS,
                     text=line.text,
                     model=line.model,
                     confidence=line.confidence,
-                )
+                ),
+                *[
+                    Reading(
+                        id=f"{line.id}:alternative:{index}:{alt_index}",
+                        kind=ReadingKind.ENGINE,
+                        text=alternative.text,
+                        model=alternative.model,
+                        confidence=alternative.confidence,
+                    )
+                    for alt_index, alternative in enumerate(line.alternatives)
+                ],
+            ]
+            disagreement = any(
+                alternative.text.casefold() != line.text.casefold()
+                for alternative in line.alternatives
             )
-        line.text = corrected
-        line.model = f"{line.model}+{rule}"
+            if disagreement or line.confidence < 0.65:
+                line.review_status = ReviewStatus.UNCERTAIN
+        return best
+
+    @staticmethod
+    def _backend_name(recognizer: Recognizer) -> str:
+        device = getattr(recognizer, "device", None)
+        if device:
+            return str(device)
+        if isinstance(recognizer, ChurroMLXRecognizer):
+            return "mlx-metal"
+        return "cpu"
 
     @staticmethod
     def _attach_spatial_alternatives(
@@ -762,6 +1110,25 @@ class RecognizerRouter:
                     )
                 ]
                 if not matches:
+                    if best.model.startswith("churro-") and best.lines:
+                        matched = min(
+                            best.lines,
+                            key=lambda line: abs(
+                                ((line.bbox[1] + line.bbox[3]) / 2) - alternative_center
+                            ),
+                        )
+                        if not any(
+                            alternative.model == candidate.model
+                            for alternative in matched.alternatives
+                        ):
+                            matched.alternatives.append(
+                                AlternativeReading(
+                                    text=alternative_line.text,
+                                    model=candidate.model,
+                                    confidence=alternative_line.confidence,
+                                )
+                            )
+                        continue
                     if (
                         candidate.model.startswith(("tesseract:", "tesseract-line:"))
                         and alternative_line.confidence >= 0.65
@@ -772,11 +1139,11 @@ class RecognizerRouter:
                     continue
                 matched = min(
                     matches,
-                    key=lambda line: abs(
-                        ((line.bbox[1] + line.bbox[3]) / 2) - alternative_center
-                    ),
+                    key=lambda line: abs(((line.bbox[1] + line.bbox[3]) / 2) - alternative_center),
                 )
-                if matched.text == alternative_line.text or len(matched.alternatives) >= 3:
+                if matched.text == alternative_line.text or any(
+                    alternative.model == candidate.model for alternative in matched.alternatives
+                ):
                     continue
                 current_quality = (
                     0.65 * matched.confidence
@@ -790,6 +1157,7 @@ class RecognizerRouter:
                 )
                 if (
                     candidate.model.startswith(("tesseract:", "tesseract-line:"))
+                    and not matched.model.startswith("churro-")
                     and len(alternative_line.text) >= max(3, len(matched.text) * 0.70)
                     and (
                         alternative_quality >= current_quality + 0.12

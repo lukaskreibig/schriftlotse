@@ -3,121 +3,227 @@
 **Alte Schriften. Klar gelesen.**
 
 SchriftLotse ist eine lokale, deutschsprachige Anwendung zum Entziffern und Durchsuchen
-historischer Dokumente. Sie verarbeitet einzelne Scans, PDFs, mehrseitige TIFFs und ganze
-Ordner. Originalgetreue Transkription, Lesefassung, PDF, DOCX, JSON und PAGE XML werden
-gemeinsam erzeugt.
+historischer Dokumente. Sie verarbeitet Scans, PDFs, mehrseitige TIFFs und ganze Ordner.
+Der Schwerpunkt liegt auf deutscher Handschrift, Kurrent, Sütterlin, Fraktur, Antiqua und
+Schreibmaschinentext von etwa 1800 bis 1945; ältere Quellen werden bestmöglich unterstützt.
 
-Der Schwerpunkt liegt auf deutschsprachiger Handschrift, Kurrent, Sütterlin, Fraktur,
-Antiqua und Schreibmaschinentext von etwa 1800 bis 1945. Spezialisierte freie Modelle decken
-auch frühneuzeitliche Quellen ab; die Unterstützung vor 1500 ist experimentell.
+## Funktionen
 
-## Das Wichtigste
+- lokale Stapelverarbeitung; optionale adaptive Cloud-Zweitprüfung nur nach Auftragsfreigabe
+- Importvorschau mit getrennten Einzelbildern, Serienvorschlag und Metadaten je Dokument
+- automatische Orientierung, konservativer Randbeschnitt und Buchfalztrennung
+- adaptive Varianten für Beleuchtung, Kontrast, Schatten und Binarisierung
+- goldstandardgestütztes Routing freier Tesseract-, Kraken-, TrOCR- und Party-Modelle;
+  CHURRO arbeitet lokal als Ganzseiten-Zweitleser und Fallback
+- sichere Seiten-Zwischenstände und Fortsetzen nach einem Abbruch
+- originalgetreue Fassung, Lesefassung, PDF, DOCX, JSON, PAGE XML und ALTO
+- eScriptorium-Paket und Rückimport korrigierter PAGE-XML-Dateien
+- Volltext-, Namens-, Fuzzy- und optional semantische Suche über alle Modell-Lesungen
+- Sprung zur Fundstelle, pixelgenaue Markierung und indexierte manuelle Korrekturen
+- sichtbare Archivbibliothek mit Eingang, Sammlungen, Archivmetadaten und Prüfliste
+- verwaltete, unveränderte Originale mit SHA-256-Prüfsummen und Integritätsprüfung
+- Live-Seitenvorschau, Modellstufe und dauerhaft gespeicherter technischer Laufbericht
+- keine Scans, Modellgewichte oder Ergebnisse im GitHub-Repository
 
-- vollständig lokale Verarbeitung; OpenRouter ist optional und pro Auftrag deaktiviert
-- adaptive Bildaufbereitung für Helligkeit, Schatten, Vergilbung, Kontrast und Schieflage
-- automatischer Vergleich von Bildvarianten und verfügbaren OCR-/HTR-Modellen
-- Batch-Verarbeitung mit natürlicher Dateisortierung und rekursiven Unterordnern
-- Archivsuche über alle Dokumente mit OCR-Fehlern, Namensvarianten und Bedeutungsähnlichkeit
-- Treffer springen zur Seite und markieren die entsprechende Zeile im Scan
-- manuelle Korrekturen aktualisieren den lokalen Suchindex
-- optionale, ausdrücklich ausgelöste Personensuche in der GND
-- Modellgewichte, Scans, Ergebnisse und API-Schlüssel liegen niemals im GitHub-Repository
+## Start auf Apple Silicon
 
-## Start auf macOS
+Voraussetzungen: macOS, [Homebrew](https://brew.sh/) und Internet für die erste Einrichtung.
 
-Voraussetzungen: macOS auf Apple Silicon, [Homebrew](https://brew.sh/) und Internet für die
-erste Einrichtung.
+1. Repository klonen oder herunterladen.
+2. `SchriftLotse.command` per Doppelklick öffnen. Falls nötig einmal
+   **Rechtsklick → Öffnen** verwenden.
+3. Die Installation von Tesseract und deutschen Sprachdaten bestätigen.
+4. Die lizenzklaren lokalen Kernmodelle TrOCR, Kraken/UB, Party und die semantische Suche
+   (ca. 4,2 GB) bestätigen.
+5. Für **Beste lokale Qualität** die Qwen Research License bestätigen; CHURRO 3B wird dann
+   lokal als MLX-8-Bit-Modell eingerichtet (ca. 4,4 GB).
+6. SchriftLotse öffnet ausschließlich lokal unter `http://127.0.0.1:7860`.
 
-1. Repository herunterladen oder klonen.
-2. `SchriftLotse.command` per Doppelklick öffnen. Beim ersten Download kann macOS einmalig
-   **Rechtsklick → Öffnen** verlangen.
-3. Die optionale Installation von Tesseract und deutschen Sprachdaten bestätigen.
-4. Einmalig TrOCR Kurrent samt vollständigem lokalem Prozessor (ca. 1,2 GB)
-   bestätigen. Modell und Prozessor sind auf feste Revisionen fixiert.
-5. Die Oberfläche öffnet sich lokal unter `http://127.0.0.1:7860`.
+Nach der ersten Einrichtung kann zusätzlich ein richtiges macOS-App-Fenster gebaut werden:
 
-Der Launcher installiert Python 3.12 und die Modelladapter reproduzierbar mit `uv`. Weitere
-jahrgangsspezifische Gewichte werden erst in **Modelle & Datenschutz** ausgewählt.
+```bash
+scripts/build_macos_app.sh
+open dist/SchriftLotse.app
+```
+
+Die kleine native App verwendet AppKit/WebKit und startet einen eigenen lokalen Python-Dienst
+auf einem freien Loopback-Port. Ein Instanz-Token verhindert, dass sie versehentlich eine
+alte laufende Oberfläche übernimmt. Dateidialog, Zwischenablage und Standard-Tastenkürzel
+sind nativ angebunden.
+Sie enthält bewusst keine Modelle oder privaten Dokumente. Das Build-Skript hinterlegt den
+aktuellen Repository-Pfad; nach einem Verschieben des Repositories die App einfach neu bauen.
 
 Manuell:
 
 ```bash
 brew install uv tesseract tesseract-lang
-uv sync --extra models --extra dev
+uv sync --frozen --extra models --extra mlx --extra dev
+uv run schriftlotse models install-core
+uv run schriftlotse models install-best --accept-research-license
 uv run schriftlotse gui
 ```
 
-## Verwendung
+## Bedienung
 
-### Oberfläche
+- **Entziffern:** Dateien ablegen oder einen Ordner wählen, optional Jahr und Schrift angeben.
+  Lose Bilder gelten zunächst als eigene Dokumente. Über **Prüfen & Metadaten** lassen sich
+  Titel, Jahr und Schrift pro Dokument setzen; echte Bildserien können bewusst gruppiert werden.
+  Während der Verarbeitung bleibt das technische Protokoll vollständig offen: Bildaufbereitung,
+  erkannte Schrift/Epoche, Modellwahl, Begründung, Backend und Laufzeiten sind live sichtbar.
+- **Archiv & Suche:** Alle Dokumente sind auch ohne Suchbegriff sichtbar. Eingang, eigene
+  verschachtelte Sammlungen, Archiv/Bestand/Signatur und verknüpfte Quellordner bilden den
+  dauerhaften Arbeitsbereich. Ein Dokument öffnet als synchroner Scan-/Text-Arbeitsplatz mit
+  vollständiger Transkription, konservativer Lesefassung und technischer Laufhistorie. Über die
+  Fassungswahl lassen sich Hauptlesung und alle gespeicherten Modell-Teilfassungen samt
+  Abdeckungsgrad durchschalten; fehlende Modellzeilen werden nicht verschleiert aufgefüllt.
+  Eine Suche öffnet direkt die richtige logische Seite und Zeile.
+  Unsichere Stellen lassen sich priorisiert abarbeiten; Exporte werden jederzeit aus der
+  Datenbank neu erzeugt.
+- **Modelle:** lokale Gewichte und Installationsstatus verwalten.
+- **Einstellungen:** Standardprofil, Schrift, Ausgabeordner, Suche und alle Cloudoptionen
+  sichtbar konfigurieren; OpenRouter-Schlüssel prüfen und im macOS-Schlüsselbund speichern.
 
-- **Entziffern:** Dateien ablegen oder Stapelordner auswählen, optional Jahr und Schriftart
-  angeben, Verarbeitung starten.
-- **Archivsuche:** intelligent, exakt, nach Namen oder nach Bedeutung suchen. Ein Treffer
-  öffnet Scan, Seite und Zeile.
-- **Modelle & Datenschutz:** freie lokale Modelle installieren und optional einen
-  OpenRouter-Schlüssel im macOS-Schlüsselbund speichern.
+Das Jahr darf leer bleiben. Eine Zahl im Dateinamen wie `brief-1872.jpg` gilt als starker
+Hinweis. Ein einzelnes möglicherweise falsch gelesenes OCR-Jahr wird bewusst nicht als
+Wahrheit übernommen. Bei schwierigen Beständen ist eine manuelle Jahres- oder Epocheneingabe
+weiterhin die zuverlässigste Modellsteuerung.
 
-### Kommandozeile
+## Modellprofile
+
+- **Schnell:** Tesseract und leichte lokale Verarbeitung.
+- **Lizenzklar:** TrOCR, Kraken/UB, Party und Tesseract ohne Forschungsgewichte. Party läuft
+  bewusst nur hier, weil es auf dem M3-CPU-Pfad erheblich langsamer als CHURRO ist.
+- **Beste lokale Qualität (Standard):** das epochenpassende TrOCR und CHURRO 3B MLX 8-Bit
+  werden verglichen. Bei bekanntem Jahr priorisiert der Router den am unabhängigen
+  Goldstandard geprüften Spezialisten; CHURRO bleibt Ganzseiten-Zweitleser und Fallback.
+- **Beste Qualität:** dieselbe lokale Pipeline; anschließend werden höchstens vier besonders
+  unsichere Zeilen je Seite bis zum bestätigten Auftragsbudget per Cloud gegengelesen. Die
+  Cloud-Fassung bleibt eine eigene, unbestätigte Lesung. Eine ausdrücklich gewählte Modelloption
+  wird respektiert; nur **Automatisch** darf bei Formularen/Tabellen Gemini und sonst Sonnet
+  wählen. Modell-Erklärungen, überlange Antworten und hineingeratene Nachbarzeilen werden vom
+  Einzelzeilen-Format-Gate verworfen und im technischen Lauf protokolliert.
+
+TrOCR nutzt auf dem M3 das MPS-Backend. Kraken/UB und Party laufen auf macOS über den stabilen
+CPU-Pfad. CHURRO nutzt MLX/Metal und erhält gezielt die beleuchtungsnormalisierte Seite. Seine
+XML-Metadaten werden nicht als Fakten übernommen; nur erkannte Dokumentzeilen gelangen als
+prüfbare Lesung in das Ergebnis. Generative Lesungen überschreiben keine manuell bestätigte
+Zeile.
+
+Bei sicher vorerkanntem Druck werden Kraken, TrOCR und CHURRO übersprungen: Sie verbessern
+solche Seiten nicht, erhöhen aber Laufzeit und Duplikate. Im lokalen Vergleich sank eine
+repräsentative Fraktur-/Antiqua-Seite von 44,3 auf 6,7 Sekunden; das Schnellprofil benötigte
+3,7 Sekunden. Gemischte Tabellen werden absichtlich nicht vorschnell als reine Druckseite
+klassifiziert. Die ausführliche Testnotiz steht in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+`CHURRO Q6_K + mmproj Q8_0` ist eine GGUF-Kombination für llama.cpp/Metal, nicht für MLX-VLM.
+Sie ist kleiner, lieferte im lokalen Vergleich mit dem verfügbaren Community-Konvertat aber
+keine verlässliche Ausgabe. SchriftLotse verwendet deshalb die selbst aus der fixierten
+Originalrevision erzeugte MLX-8-Bit-Fassung. Eine MLX-4-Bit-Fassung war zwar kleiner, brach bei
+den schwierigen Testseiten jedoch leer oder mit degenerierter XML-Ausgabe ab.
+
+Modellquellen, Revisionen und Lizenzen stehen in
+[THIRD_PARTY_MODELS.md](THIRD_PARTY_MODELS.md). Kein Modell wird still aktualisiert.
+
+## Bildaufbereitung und Nachvollziehbarkeit
+
+Das Original bleibt unangetastet. SchriftLotse erzeugt lokale Arbeitsbilder, erkennt echte
+Doppelseiten über den Buchfalz und speichert die Abbildung zur Originalseite. Dadurch bleiben
+Suchmarkierungen auch nach Drehung, Beschnitt und Trennung korrekt. Jahres- oder Formularregeln
+schreiben die Rohtranskription niemals heimlich um. Automatische, alternative und manuell
+bestätigte Lesungen werden getrennt gespeichert und durchsucht.
+
+## Bibliothek und Datensicherheit
+
+Neue Originale werden standardmäßig unter `~/Documents/SchriftLotse/Bibliothek` verwaltet.
+Jedes Dokument besitzt einen stabilen UUID-Ordner für Originale, Arbeitsseiten, Vorschau und
+reproduzierbare Ergebnisse. Inhaltsgleiche Importe teilen sich ein internes Objekt; sichtbare
+Dokumentordner bleiben trotzdem eigenständig. Beim ersten Start nach dem Bibliotheksupdate
+zeigt die App eine Migrationsvorschau und verändert alte Quellen erst nach Bestätigung.
+
+Ein geordneter Stammordner wird als oberste Sammlung übernommen; seine Unterordner werden zu
+verschachtelten Sammlungen. Der Ordner bleibt als manuell abgleichbare Quelle verknüpft.
+**Änderungen prüfen** erkennt neue, geänderte, verschobene und fehlende Dateien. Es gibt keine
+Hintergrundüberwachung: Erst eine bestätigte Auswahl startet neue OCR. Verschobene identische
+Dateien werden ohne neue Erkennung umgeordnet, fehlende Quellen löschen niemals die verwaltete
+Kopie. Direkte Einzelimporte ohne Sammlung bleiben im **Eingang**, bis sie abgelegt werden.
+Dokumente lassen sich im Kopf des Lesers in den **Papierkorb** verschieben. Dort stehen
+**Wiederherstellen** und das davon klar getrennte **Endgültig löschen** zur Verfügung.
+
+Die native macOS-App übergibt ausgewählte Pfade direkt und bewahrt dadurch den echten
+Dateinamen. Temporäre Namen wie `tempImage…` werden zusätzlich erkannt und müssen vor dem Start
+durch einen verständlichen Titel ersetzt werden.
+
+Die Bibliotheksprüfung vergleicht verwaltete Dateien mit ihrer SHA-256-Prüfsumme. Sie ersetzt
+kein Backup; der gesamte Ordner sollte weiterhin durch Time Machine oder eine andere lokale
+Sicherung erfasst werden.
+
+## Kraken und eScriptorium
+
+Kraken ist direkt als Segmentierungs- und Erkennungsbibliothek eingebaut. eScriptorium bleibt
+die stärkere Spezialoberfläche für umfangreiche manuelle Segmentierung, Ground Truth und
+Fine-Tuning, wäre als zwingender App-Unterbau aber unnötig schwer. Jeder Lauf erzeugt deshalb
+`escriptorium-pagexml.zip` mit Bildern und PAGE XML. Korrigierte XML-Dateien lassen sich
+anschließend zurückspielen:
 
 ```bash
-uv run schriftlotse batch ~/Scans --year 1872 --script handschrift
-uv run schriftlotse search "Johann Schmitt" --mode namen
-uv run schriftlotse models list
-uv run schriftlotse models install-core
-uv run schriftlotse models install party-v4
-uv run schriftlotse doctor
+uv run schriftlotse import-pagexml DOKUMENT_ID korrigiert/*.xml
 ```
 
-## Bildaufbereitung
+## Suche
 
-Das Original bleibt unangetastet. SchriftLotse erzeugt temporär ein orientiertes Farbbild,
-eine beleuchtungsnormalisierte Graustufenversion, eine mild kontrastverstärkte Version und
-eine adaptive Sauvola-Binarisierung. Bildmetriken wählen zwei Kandidaten; die OCR-Ergebnisse
-entscheiden anschließend. Das mit Kraken gelieferte freie BLLA-Modell erkennt Grundlinien
-und Lesereihenfolge auch auf gemischten Formularen. Gedruckte Fraktur wird zeilenweise mit
-Tesseract gegengelesen und mit der Kurrent-Erkennung zusammengeführt. Orli bleibt als
-experimentelle Alternative verfügbar. Umlaute, Punkte und kleine Satzzeichen werden nicht
-aggressiv entfernt.
-
-## Lokale Modelle
-
-Modellquellen, feste Revisionen, Einsatzzweck und Lizenzen stehen in
-[THIRD_PARTY_MODELS.md](THIRD_PARTY_MODELS.md). Der Basismodus funktioniert mit Tesseract;
-für schwierige Handschrift sind die jahrgangsspezifischen TrOCR-Modelle vorgesehen. Party v4
-ist wegen seines hohen Speicherbedarfs nur eine experimentelle Option für stärkere Systeme.
-Kein Modell wird still aktualisiert.
-
-## Archivsuche
-
-Die lokale Suche kombiniert SQLite FTS5, BM25, Trigramme, RapidFuzz, Kölner Phonetik,
-OCR-Alternativen und Namensgruppen. Mit installiertem Qwen3-Embedding-0.6B kommt semantische
-Suche hinzu. Die Namenssuche bleibt unabhängig davon vollständig lokal und kombiniert
-phonetische Ähnlichkeit, Schreibvarianten und alternative OCR-Lesungen.
+Die lokale Suche kombiniert SQLite FTS5/BM25, Trigramme, RapidFuzz, Kölner Phonetik,
+Namensvarianten und sämtliche OCR-/HTR-Lesungen. Mit installiertem Qwen3-Embedding-0.6B kommt
+semantische Suche hinzu. Sie bettet jeweils drei benachbarte Zeilen ein und kennt transparente
+Archivwort-Familien wie Eheschließung/Trauung/verheiratet oder Tod/Bestattung/verstorben. Eine
+bestätigte Korrektur ersetzt den sichtbaren Text, frühere Modell-Lesungen bleiben jedoch als
+mögliche Suchspur erhalten.
 
 ## Datenschutz
 
-- Serverbindung ausschließlich `127.0.0.1`, keine Gradio-Freigabe
-- OpenRouter nur nach Aktivierung; ZDR und `data_collection: deny`
-- Schlüssel im macOS-Schlüsselbund
-- GND-Abgleich nur nach Klick und nur mit dem ausgewählten Namen
-- alle lokalen Pfade siehe `schriftlotse doctor`
+- Bindung ausschließlich an `127.0.0.1`, keine öffentliche Freigabe
+- OpenRouter nur nach Klick auf eine Fundstelle oder nach ausdrücklicher Freigabe des Profils
+  **Beste Qualität** samt Kostenlimit
+- `data_collection: deny` für alle Profile; ZDR wird nur bei entsprechend verfügbaren
+  Endpunkten verlangt und in der Oberfläche pro Modell ausgewiesen
+- lokale Pfade und Modellstatus über `uv run schriftlotse doctor`
+
+Für die optionale OpenRouter-Zweitprüfung stehen vier explizite, reproduzierbare Profile bereit:
+
+- **Formulare & Seiten:** Gemini 3.5 Flash
+- **Ausgewogen/experimentell:** GPT-5.6 Luna (derzeit ohne ZDR-Endpunkt)
+- **OCR-Preis/Leistung:** Qwen3 VL 235B A22B Instruct
+- **Textstellen (Standard):** Claude Sonnet 5
+
+Die IDs und Preise wurden am 18. Juli 2026 gegen den Live-Katalog geprüft. Es gibt keinen
+öffentlichen Benchmark, der diese Modelle belastbar auf genau deutscher Kurrent dieses
+Bestands vergleicht; deshalb kann die Benchmark-CLI acht private Goldausschnitte kontrolliert
+gegen alle vier Modelle testen. Die Bezeichnungen sind Empfehlungen, keine Garantie.
+Die App fordert eine reine Transkription ohne JSON-Zwang an, entfernt klar abgegrenzte
+Reasoning-/Markdown-Hüllen lokal und verwirft leere, abgelehnte oder unplausibel lange
+Antworten. Modell, Laufzeit, Kosten und Fehler werden dauerhaft protokolliert. Ohne
+API-Schlüssel bleibt die Funktion vollständig inaktiv.
 
 ## Qualitätsgrenzen
 
-Unbekannte Handschriften und beschädigte Vorlagen können nicht garantiert fehlerfrei
-erkannt werden. SchriftLotse zeigt deshalb Modell, Bildvariante, Konfidenz, erwartete
-Fehlerrate und alternative Lesungen an. Historische Rechtschreibung wird nicht automatisch
-modernisiert.
+Unbekannte Hände, beschädigte Vorlagen und komplexe Tabellen können nicht garantiert
+fehlerfrei gelesen werden. Konfidenzen verschiedener Engines sind nicht direkt vergleichbar;
+die erwartete Fehlerrate ist ohne eigene Referenzdaten nur eine Heuristik. Für wiederkehrende
+Bestände ist Fine-Tuning mit korrigierten eigenen Zeilen langfristig wirksamer als ein immer
+größeres Universalmodell.
 
 ## Entwicklung
 
 ```bash
-uv sync --extra dev
+uv sync --extra models --extra mlx --extra dev
 uv run ruff check .
-uv run mypy src/schriftlotse
+uv run mypy src
 uv run pytest
+scripts/build_macos_app.sh
 ```
 
-Beiträge sind willkommen; bitte keine privaten Scans oder Transkriptionen in Issues
-hochladen. Der eigene Code steht unter Apache-2.0, Modelllizenzen gelten separat.
+Reproduzierbare Qualitätsläufe und die gemessenen CER-Werte stehen in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md). Browser-E2E-Tests prüfen Dateiupload, Dropdown,
+Einstellungen, Tastaturbedienung und die scrollfreie 1100×800-/1320×860-Arbeitsfläche.
+
+Bitte keine privaten Scans in Issues oder Commits hochladen. Der Anwendungscode steht unter
+Apache-2.0; Modelllizenzen gelten separat.

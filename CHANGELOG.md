@@ -1,5 +1,81 @@
 # Änderungsprotokoll
 
+## 0.2.0 – 2026-07-18
+
+- sichtbarer Papierkorb im Dokumentkopf mit Wiederherstellen und bewusst getrenntem,
+  endgültigem Löschen verwalteter Originale
+- dokumentweite Fassungsumschaltung zeigt Hauptlesung und reine TrOCR-, CHURRO-, Kraken-,
+  Tesseract- und Cloud-Teilfassungen mit Abdeckungsgrad und Qualitätswarnungen
+- Cloud-Vergleich markiert jede geprüfte Zeile, Modell, Kosten und Abweichung; ältere formal
+  auffällige Antworten bleiben auditierbar, werden aber deutlich gewarnt
+- explizit gewählte Cloudmodelle werden nicht mehr durch das Layout-Routing überschrieben;
+  nur die neue Auswahl „Automatisch“ darf zwischen Sonnet und Gemini wählen
+- engere Einzelzeilen-Ausschnitte und Format-Gate verwerfen Cloud-Erklärungen sowie
+  hineingeratene Nachbarzeilen, ohne die Ausgabe still umzuschreiben
+- vollständiger Scan-/Text-Dokumentarbeitsplatz mit synchronen Zeilenmarkierungen,
+  Original-/Aufbereitet-Ansicht, Transkription, Lesefassung und direkter Korrektur
+- verschachtelte Sammlungen und strukturierter Ordnerimport mit sichtbarem Zielpfad
+- verknüpfte Quellordner mit manuellem, nichtdestruktivem Prüfsummen-Abgleich
+- Eingang erklärt fertige Ergebnisse und führt direkt zu Transkription und Ablage
+- dauerhaft geöffnetes strukturiertes Laufprotokoll zeigt Bildanalyse, Modellroute,
+  Auswahlbegründung, Backends und Laufzeiten
+- native Dateiauswahl umgeht WebKit-Temporärnamen; generische Titel werden vor OCR abgefangen
+
+- vollständiger Archivbrowser zeigt Dokumente ohne vorherige Suche in Raster oder Liste
+- flexible Sammlungen sowie Archiv-, Bestands-, Serien- und Signaturmetadaten
+- verwaltete Originalbibliothek mit Inhaltsprüfung, Dublettenerkennung und Papierkorb
+- bestätigte Migrationsvorschau für alte Referenzen; versehentliche Bildserien lassen sich
+  ohne Verlust vorhandener OCR-Zeilen in einzelne Dokumente trennen
+- Exporte werden aus der Datenbank regeneriert und hängen nicht mehr von `result.json` ab
+- technische Seitenberichte speichern Bilddiagnostik, Profil, Modellläufe und Unsicherheiten
+- ressourcenschonende Live-Seitenvorschau mit Stufe, Modell und erkannten Zeilenbereichen
+- Dokumentmetadaten und Sammlungszuordnungen bleiben bei einer erneuten OCR erhalten
+
+- nativer WKWebView-Dateidialog und vollständiges Bearbeiten-Menü für ⌘X/⌘C/⌘V/⌘A
+- eigener dynamischer Loopback-Port und Instanzprüfung verhindern eine veraltete Oberfläche
+- kompakter Vier-Schritt-Arbeitsfluss mit barrierearmem Schrift-Combobox und sichtbaren
+  Einstellungen für Profile, Suche, Ausgabe, Tesseract und OpenRouter
+- vier kuratierte OpenRouter-Modelle zeigen Anbieter und exakte, fest benannte Modell-ID;
+  Schlüssel lassen sich vor Nutzung über die Key-API prüfen
+- unabhängige Goldbenchmarks für Kurrent 1665 und 1848–1903 mit CER/WER-CLI
+- epochenpassendes TrOCR erhält bei bekanntem Jahr Goldstandard-Vorrang; CHURRO bleibt
+  Ganzseiten-Zweitleser und Fallback statt pauschaler Hauptlesung
+- Trigram-Vorauswahl skaliert die Fuzzy-/Namenssuche über den gesamten Index; Scores
+  saturieren nicht mehr pauschal bei 1,000
+- Such-Qrels (Recall/MRR), privater 8×4-Cloudvergleich und Browser-E2E-Tests ergänzt
+
+- lokale FastAPI-Oberfläche mit dauerhaftem Status und Verarbeitungsprotokoll
+- automatische Orientierung, konservativer Seitenrand und robuste Buchfalztrennung
+- getrennte Buchseiten werden nochmals einzeln vom Film-/Aufnahmerand befreit
+- Kraken/UB und CHURRO-MLX-8-Bit in den lokalen Modellrouter integriert
+- CHURRO nutzt als Standard-Ganzseitenleser die im Dokumenttest zuverlässigere
+  Beleuchtungsnormalisierung und übernimmt nur Dokumentzeilen aus der XML-Ausgabe
+- Party bleibt im lizenzklaren Profil verfügbar, bremst aber nicht mehr das CHURRO-Profil
+- achtstellige Datumsangaben in Dateinamen (z. B. `19230726`) steuern das Epochenmodell
+- CLI-Stapel können mit `--resume-job` aus Seiten-Checkpoints fortgesetzt werden
+- CHURRO-Sprungkoordinaten verwenden schnelle Bildboxen statt einer zweiten Kraken-BLLA-Runde
+- Profile für schnell, beste lokale Qualität und lizenzklar
+- konservative Jahreserkennung ohne stille Jahres- oder Formularumschreibungen
+- getrennte Modell-Lesungen, bestätigte Fassungen, Regionen, Grundlinien und Polygone
+- Suche über alternative OCR-/HTR-Lesungen und manuelle Fassungen
+- semantische Suche mit Drei-Zeilen-Kontext und transparenten deutschen Archivbegriffen
+- einmalige FTS-Neuindizierung auf Schema v4; keine veralteten Treffer nach Wiederholungsläufen
+- PAGE XML, ALTO, eScriptorium-Paket und PAGE-XML-Rückimport
+- pixelgenaue logische Seitenbilder nach einer Doppelseitentrennung
+- seitenweise Zwischenstände und Fortsetzen unterbrochener Aufträge
+- OpenRouter ausschließlich für ausgewählte Zeilenausschnitte
+- sichtbare Modellinstallation mit Lizenz-, Prüfsummen- und Speicherprüfung
+- konservative Druck-Vorerkennung; unnötige Handschriftmodelle werden auf sicheren
+  Druckseiten nicht mehr gestartet (Testseite: 44,3 s auf 6,7 s)
+- monotone Fortschrittsanzeige mit grober Restzeit auch nach Doppelseitentrennung
+- priorisierte Prüfliste unsicherer Zeilen und sichtbare alternative Modell-Lesungen
+- vier auswählbare OpenRouter-Profile mit Live-Katalog-geprüften Modell-IDs,
+  Kostenbestätigung und ZDR-Weiterleitung
+- nativer, lokal signierter AppKit/WebKit-Rahmen über `scripts/build_macos_app.sh`
+- CLI-Profilwahl über `--profile`
+- Qwen3 Embedding 0.6B gehört nun zu den empfohlenen Kernmodellen, damit die
+  Bedeutungsähnlichkeit nach der Ersteinrichtung tatsächlich lokal verfügbar ist
+
 ## 0.1.4 – 2026-07-17
 
 - fehlenden TrOCR-Tokenizer erkannt und mit vollständig gepinntem Offline-Prozessor repariert

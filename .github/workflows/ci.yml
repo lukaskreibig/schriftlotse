@@ -22,6 +22,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --frozen --extra dev
+      - if: runner.os == 'Linux'
+        run: uv run playwright install --with-deps chromium
       - run: uv run ruff check .
       - run: uv run mypy src/schriftlotse
       - run: uv run pytest --cov=schriftlotse --cov-report=term-missing

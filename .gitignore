@@ -15,6 +15,7 @@ output/
 outputs/
 scans/
 documents/
+testdocs/
 *.sqlite
 *.sqlite3
 *.db
@@ -27,3 +28,11 @@ documents/
 models/
 search-index/
 *.log
+*.pdf
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+!docs/*.png
+!tests/fixtures/*.png

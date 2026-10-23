@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import shutil
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -36,39 +37,131 @@ def reading_text(result: DocumentResult) -> str:
     return re.sub(r"[ \t]+", " ", text).strip() + "\n"
 
 
-def _page_xml(result: DocumentResult, page: PageResult, destination: Path) -> None:
+def _polygon_points(points: list[tuple[int, int]]) -> str:
+    return " ".join(f"{x},{y}" for x, y in points)
+
+
+def _page_xml(
+    result: DocumentResult,
+    page: PageResult,
+    destination: Path,
+    image_filename: str | None = None,
+) -> None:
     root = ET.Element(f"{{{NS}}}PcGts")
     metadata = ET.SubElement(root, f"{{{NS}}}Metadata")
     ET.SubElement(metadata, f"{{{NS}}}Creator").text = f"SchriftLotse {__version__}"
     page_node = ET.SubElement(
         root,
         f"{{{NS}}}Page",
-        imageFilename=page.source_path.name,
+        imageFilename=image_filename or page.source_path.name,
         imageWidth=str(page.width),
         imageHeight=str(page.height),
     )
-    region = ET.SubElement(page_node, f"{{{NS}}}TextRegion", id="region_1")
-    ET.SubElement(
-        region,
-        f"{{{NS}}}Coords",
-        points=f"0,0 {page.width},0 {page.width},{page.height} 0,{page.height}",
-    )
+    region_nodes: dict[str, ET.Element] = {}
+    for item in page.regions:
+        region = ET.SubElement(
+            page_node,
+            f"{{{NS}}}TextRegion",
+            id=item.id,
+            custom=f"readingOrder {{index:{item.reading_order};}} type:{item.region_type}",
+        )
+        ET.SubElement(region, f"{{{NS}}}Coords", points=_polygon_points(item.polygon))
+        region_nodes[item.id] = region
+    if not region_nodes:
+        region = ET.SubElement(page_node, f"{{{NS}}}TextRegion", id="region_1")
+        ET.SubElement(
+            region,
+            f"{{{NS}}}Coords",
+            points=f"0,0 {page.width},0 {page.width},{page.height} 0,{page.height}",
+        )
+        region_nodes["region_1"] = region
     for line in page.lines:
         x1, y1, x2, y2 = line.bbox
+        parent = region_nodes.get(line.region_id or "")
+        if parent is None:
+            parent = next(iter(region_nodes.values()))
         line_node = ET.SubElement(
-            region,
+            parent,
             f"{{{NS}}}TextLine",
             id=line.id,
             conf=f"{line.confidence:.5f}",
             custom=f"model:{line.model}; variant:{line.variant}",
         )
+        polygon = line.polygon or [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+        ET.SubElement(line_node, f"{{{NS}}}Coords", points=_polygon_points(polygon))
+        if line.baseline:
+            ET.SubElement(
+                line_node,
+                f"{{{NS}}}Baseline",
+                points=_polygon_points(line.baseline),
+            )
+        text_equiv = ET.SubElement(
+            line_node, f"{{{NS}}}TextEquiv", index="0", conf=f"{line.confidence:.5f}"
+        )
+        ET.SubElement(text_equiv, f"{{{NS}}}Unicode").text = line.text
+        for index, reading in enumerate(line.readings, start=1):
+            if reading.text == line.text:
+                continue
+            alternative = ET.SubElement(
+                line_node,
+                f"{{{NS}}}TextEquiv",
+                index=str(index),
+                conf=f"{reading.confidence:.5f}",
+                dataType=reading.kind.value,
+                dataTypeDetails=reading.model,
+            )
+            ET.SubElement(alternative, f"{{{NS}}}Unicode").text = reading.text
+    ET.ElementTree(root).write(destination, encoding="utf-8", xml_declaration=True)
+
+
+ALTO_NS = "http://www.loc.gov/standards/alto/ns-v4#"
+
+
+def _alto(page: PageResult, destination: Path, image_filename: str) -> None:
+    root = ET.Element(f"{{{ALTO_NS}}}alto")
+    description = ET.SubElement(root, f"{{{ALTO_NS}}}Description")
+    source = ET.SubElement(description, f"{{{ALTO_NS}}}sourceImageInformation")
+    ET.SubElement(source, f"{{{ALTO_NS}}}fileName").text = image_filename
+    layout = ET.SubElement(root, f"{{{ALTO_NS}}}Layout")
+    page_node = ET.SubElement(
+        layout,
+        f"{{{ALTO_NS}}}Page",
+        ID=f"page_{page.page_index:04d}",
+        WIDTH=str(page.width),
+        HEIGHT=str(page.height),
+        PHYSICAL_IMG_NR=str(page.page_index + 1),
+    )
+    print_space = ET.SubElement(
+        page_node,
+        f"{{{ALTO_NS}}}PrintSpace",
+        HPOS="0",
+        VPOS="0",
+        WIDTH=str(page.width),
+        HEIGHT=str(page.height),
+    )
+    block = ET.SubElement(print_space, f"{{{ALTO_NS}}}TextBlock", ID="block_1")
+    for line in page.lines:
+        x1, y1, x2, y2 = line.bbox
+        line_node = ET.SubElement(
+            block,
+            f"{{{ALTO_NS}}}TextLine",
+            ID=line.id,
+            HPOS=str(x1),
+            VPOS=str(y1),
+            WIDTH=str(x2 - x1),
+            HEIGHT=str(y2 - y1),
+        )
         ET.SubElement(
             line_node,
-            f"{{{NS}}}Coords",
-            points=f"{x1},{y1} {x2},{y1} {x2},{y2} {x1},{y2}",
+            f"{{{ALTO_NS}}}String",
+            ID=f"{line.id}_text",
+            CONTENT=line.text,
+            WC=f"{line.confidence:.5f}",
+            HPOS=str(x1),
+            VPOS=str(y1),
+            WIDTH=str(x2 - x1),
+            HEIGHT=str(y2 - y1),
         )
-        text_equiv = ET.SubElement(line_node, f"{{{NS}}}TextEquiv", conf=f"{line.confidence:.5f}")
-        ET.SubElement(text_equiv, f"{{{NS}}}Unicode").text = line.text
     ET.ElementTree(root).write(destination, encoding="utf-8", xml_declaration=True)
 
 
@@ -210,13 +303,50 @@ def export_document(result: DocumentResult, output_dir: Path) -> list[Path]:
     _pdf(result, pdf_path)
     pagexml_dir = output_dir / "pagexml"
     pagexml_dir.mkdir(exist_ok=True)
+    alto_dir = output_dir / "alto"
+    alto_dir.mkdir(exist_ok=True)
+    images_dir = output_dir / "images"
+    images_dir.mkdir(exist_ok=True)
     page_files: list[Path] = []
+    alto_files: list[Path] = []
+    image_files: list[Path] = []
     for page in result.pages:
+        image_path = images_dir / f"seite_{page.page_index + 1:04d}.png"
+        source_image = (
+            page.prepared_path
+            if page.prepared_path is not None and page.prepared_path.is_file()
+            else page.source_path
+        )
+        if source_image.suffix.lower() == ".png":
+            shutil.copy2(source_image, image_path)
+        else:
+            from schriftlotse.ingest import load_page
+
+            load_page(source_image, page.source_page_index).save(image_path)
         page_path = pagexml_dir / f"seite_{page.page_index + 1:04d}.xml"
-        _page_xml(result, page, page_path)
+        relative_image = f"../images/{image_path.name}"
+        _page_xml(result, page, page_path, relative_image)
+        alto_path = alto_dir / f"seite_{page.page_index + 1:04d}.xml"
+        _alto(page, alto_path, relative_image)
         page_files.append(page_path)
+        alto_files.append(alto_path)
+        image_files.append(image_path)
+    escriptorium_archive = output_dir / "escriptorium-pagexml.zip"
+    with zipfile.ZipFile(escriptorium_archive, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for path in [*page_files, *image_files]:
+            zip_file.write(path, path.relative_to(output_dir))
     archive = output_dir / "schriftlotse-ergebnis.zip"
-    files = [original, readable, json_path, docx_path, pdf_path, *page_files]
+    files = [
+        original,
+        readable,
+        json_path,
+        docx_path,
+        pdf_path,
+        *page_files,
+        *alto_files,
+        *image_files,
+        escriptorium_archive,
+    ]
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
         for path in files:
             zip_file.write(path, path.relative_to(output_dir))

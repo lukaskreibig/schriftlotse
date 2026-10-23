@@ -70,3 +70,15 @@ def parse_recognized(path: Path, model: str, variant: str) -> list[LineResult]:
             )
         )
     return [line for line in lines if line.text]
+
+
+def parse_text_by_id(path: Path) -> dict[str, str]:
+    """Reads corrected PAGE XML while retaining SchriftLotse line identifiers."""
+    tree = ET.parse(path)
+    result: dict[str, str] = {}
+    for element in tree.findall(f".//{{{NS}}}TextLine"):
+        line_id = element.attrib.get("id", "").strip()
+        unicode_node = element.find(f".//{{{NS}}}TextEquiv[1]/{{{NS}}}Unicode")
+        if line_id and unicode_node is not None and unicode_node.text is not None:
+            result[line_id] = unicode_node.text.strip()
+    return result
